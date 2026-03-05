@@ -1,0 +1,7 @@
+flask==3.0.3
+anthropic==0.34.2
+feedparser==6.0.11
+apscheduler==3.10.4
+python-dotenv==1.0.1
+gunicorn==22.0.0
+Werkzeug==3.0.4

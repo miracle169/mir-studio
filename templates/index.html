@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <title>Mir Studio</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- ── App Shell ──────────────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="app-logo">✦</span>
+      <span class="app-name">Mir Studio</span>
+    </div>
+    <div class="topbar-right">
+      <div class="streak-badge" id="streak-badge">
+        <span class="streak-fire">🔥</span>
+        <span class="streak-num" id="streak-num">0</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── TAB: CREATE ───────────────────────────────────────────────────────── -->
+  <div class="tab-content active" id="tab-create">
+
+    <!-- ZONE 1: CAPTURE -->
+    <div class="capture-zone">
+
+      <!-- Voice button -->
+      <div class="voice-row">
+        <button class="voice-btn" id="voice-btn" aria-label="Record voice note">
+          <span class="voice-icon">🎙️</span>
+          <span class="voice-label" id="voice-label">Tap to speak</span>
+        </button>
+      </div>
+
+      <!-- Thought textarea -->
+      <div class="input-group">
+        <textarea
+          id="thought-input"
+          class="thought-textarea"
+          placeholder="What's on your mind?"
+          rows="4"
+          maxlength="2000"
+        ></textarea>
+        <div class="char-count" id="char-count">0 / 2000</div>
+      </div>
+
+      <!-- Photo upload -->
+      <div class="photo-row">
+        <label class="photo-btn" for="photo-input">
+          <span>📸</span> Add photo
+        </label>
+        <input type="file" id="photo-input" accept="image/*" style="display:none" />
+        <div class="image-context-chip" id="image-context-chip" style="display:none">
+          <span id="image-context-text"></span>
+          <button class="chip-remove" id="remove-image">✕</button>
+        </div>
+      </div>
+
+      <!-- Platform selector -->
+      <div class="section-label">Post to</div>
+      <div class="platform-row" id="platform-row">
+        <button class="platform-pill active" data-platform="linkedin">
+          <span>🔗</span> LinkedIn
+        </button>
+        <button class="platform-pill" data-platform="newsletter">
+          <span>📧</span> Newsletter
+        </button>
+        <button class="platform-pill" data-platform="instagram">
+          <span>📸</span> Instagram
+        </button>
+      </div>
+
+      <!-- Context chips -->
+      <div class="context-row">
+        <button class="context-chip" id="story-chip">📚 Add story</button>
+        <button class="context-chip" id="intel-chip">📡 Use intel</button>
+      </div>
+
+      <!-- Story context display -->
+      <div class="active-context" id="story-context-display" style="display:none">
+        <span class="context-icon">📚</span>
+        <span id="story-context-label"></span>
+        <button class="chip-remove" id="remove-story">✕</button>
+      </div>
+
+      <!-- Intel context display -->
+      <div class="active-context" id="intel-context-display" style="display:none">
+        <span class="context-icon">📡</span>
+        <span id="intel-context-label"></span>
+        <button class="chip-remove" id="remove-intel">✕</button>
+      </div>
+
+      <!-- Generate button -->
+      <button class="btn-primary" id="generate-btn" disabled>
+        <span id="generate-btn-text">✨ Generate</span>
+        <div class="spinner" id="generate-spinner" style="display:none"></div>
+      </button>
+
+    </div><!-- /capture-zone -->
+
+    <!-- GENERATED OUTPUT -->
+    <div class="output-section" id="output-section" style="display:none">
+      <div class="output-tabs" id="output-tabs"></div>
+      <div class="output-body" id="output-body"></div>
+      <div class="output-actions">
+        <button class="btn-outline" id="save-draft-btn">💾 Save Draft</button>
+      </div>
+    </div>
+
+    <!-- ZONE 2: CONTENT SECTIONS -->
+    <div class="content-sections" id="content-sections">
+
+      <!-- LinkedIn section -->
+      <div class="section-header">
+        <div class="section-title-row">
+          <span class="section-icon">🔗</span>
+          <span class="section-title">LinkedIn</span>
+          <span class="section-count" id="li-count">0 posts</span>
+        </div>
+        <div class="section-controls">
+          <button class="filter-chip active" data-section="linkedin" data-filter="all">All</button>
+          <button class="filter-chip" data-section="linkedin" data-filter="draft">Draft</button>
+          <button class="filter-chip" data-section="linkedin" data-filter="posted">Posted</button>
+        </div>
+      </div>
+      <div class="content-list" id="linkedin-list">
+        <div class="empty-state">No LinkedIn posts yet. Speak a thought to get started.</div>
+      </div>
+
+      <!-- Newsletter section -->
+      <div class="section-header" style="margin-top:24px">
+        <div class="section-title-row">
+          <span class="section-icon">📧</span>
+          <span class="section-title">Newsletter</span>
+          <span class="section-count" id="nl-count">0 editions</span>
+        </div>
+        <div class="section-controls">
+          <button class="filter-chip active" data-section="newsletter" data-filter="all">All</button>
+          <button class="filter-chip" data-section="newsletter" data-filter="draft">Draft</button>
+          <button class="filter-chip" data-section="newsletter" data-filter="posted">Posted</button>
+        </div>
+      </div>
+      <div class="content-list" id="newsletter-list">
+        <div class="empty-state">No newsletter drafts yet.</div>
+      </div>
+
+      <!-- Instagram section -->
+      <div class="section-header" style="margin-top:24px">
+        <div class="section-title-row">
+          <span class="section-icon">📸</span>
+          <span class="section-title">Instagram</span>
+          <span class="section-count" id="ig-count">0 scripts</span>
+        </div>
+        <div class="section-controls">
+          <button class="filter-chip active" data-section="instagram" data-filter="all">All</button>
+          <button class="filter-chip" data-section="instagram" data-filter="draft">Draft</button>
+          <button class="filter-chip" data-section="instagram" data-filter="posted">Posted</button>
+        </div>
+      </div>
+      <div class="content-list" id="instagram-list">
+        <div class="empty-state">No Instagram scripts yet.</div>
+      </div>
+
+    </div><!-- /content-sections -->
+  </div><!-- /tab-create -->
+
+
+  <!-- ── TAB: INTEL ────────────────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-intel">
+    <div class="tab-hero">
+      <div class="tab-hero-title">📡 Daily Intel</div>
+      <div class="intel-refresh-row">
+        <span class="intel-timestamp" id="intel-timestamp">Refreshes at 6am</span>
+        <button class="btn-small" id="intel-refresh-btn">Refresh now</button>
+      </div>
+    </div>
+
+    <div id="intel-loading" class="loading-state" style="display:none">
+      <div class="spinner-large"></div>
+      <p>Pulling from 12 sources...</p>
+    </div>
+
+    <div id="intel-empty" class="empty-state-full">
+      <div class="empty-icon">📡</div>
+      <p>No intel yet. Tap "Refresh now" to pull today's briefing.</p>
+    </div>
+
+    <div id="intel-content" style="display:none">
+
+      <!-- LinkedIn Intel -->
+      <div class="intel-section">
+        <div class="intel-section-title">💼 LinkedIn Trending</div>
+        <div id="intel-linkedin"></div>
+      </div>
+
+      <!-- Instagram Intel -->
+      <div class="intel-section">
+        <div class="intel-section-title">📸 Instagram Trending</div>
+        <div id="intel-instagram"></div>
+      </div>
+
+      <!-- Gaps -->
+      <div class="intel-section">
+        <div class="intel-section-title">💡 Content Gaps</div>
+        <div id="intel-gaps"></div>
+      </div>
+
+      <!-- Suggested angles -->
+      <div class="intel-section">
+        <div class="intel-section-title">✏️ Suggested Angles for You</div>
+        <div id="intel-angles"></div>
+      </div>
+
+      <!-- Articles -->
+      <div class="intel-section">
+        <div class="intel-section-title">📰 Latest Articles</div>
+        <div id="intel-articles"></div>
+      </div>
+
+    </div>
+  </div><!-- /tab-intel -->
+
+
+  <!-- ── TAB: LIBRARY ──────────────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-library">
+    <div class="tab-hero">
+      <div class="tab-hero-title">📚 Library</div>
+    </div>
+
+    <!-- Story bank -->
+    <div class="section-header">
+      <div class="section-title-row">
+        <span class="section-title">Story Bank</span>
+        <button class="btn-small" id="add-story-btn">+ Add</button>
+      </div>
+    </div>
+    <div id="stories-list" class="stories-grid"></div>
+
+    <!-- Raw ideas -->
+    <div class="section-header" style="margin-top:28px">
+      <div class="section-title-row">
+        <span class="section-title">💡 Raw Ideas</span>
+        <span class="section-count" id="raw-ideas-count">0 ideas</span>
+      </div>
+    </div>
+    <div id="raw-ideas-list"></div>
+
+    <!-- Add story modal -->
+    <div class="modal-overlay" id="add-story-modal" style="display:none">
+      <div class="modal">
+        <div class="modal-title">Add Story</div>
+        <input type="text" id="story-title-input" class="modal-input" placeholder="Story title..." />
+        <textarea id="story-body-input" class="modal-textarea" placeholder="Tell the story in 200-400 words. Include real numbers, real feelings, what you learned."></textarea>
+        <select id="story-platform-select" class="modal-select">
+          <option value="linkedin">LinkedIn only</option>
+          <option value="instagram">Instagram only</option>
+          <option value="both" selected>Both platforms</option>
+        </select>
+        <div class="modal-actions">
+          <button class="btn-outline" id="cancel-story-btn">Cancel</button>
+          <button class="btn-primary" id="confirm-add-story-btn">Add Story</button>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-library -->
+
+
+  <!-- ── TAB: QUEUE ────────────────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-queue">
+    <div class="tab-hero">
+      <div class="tab-hero-title">📅 Queue</div>
+      <div class="queue-stats-row">
+        <div class="queue-stat">
+          <div class="queue-stat-num" id="queue-streak">0</div>
+          <div class="queue-stat-label">🔥 streak</div>
+        </div>
+        <div class="queue-stat">
+          <div class="queue-stat-num" id="queue-this-week">0</div>
+          <div class="queue-stat-label">this week</div>
+        </div>
+        <div class="queue-stat">
+          <div class="queue-stat-num" id="queue-total-li">0</div>
+          <div class="queue-stat-label">LinkedIn</div>
+        </div>
+        <div class="queue-stat">
+          <div class="queue-stat-num" id="queue-total-ig">0</div>
+          <div class="queue-stat-label">Reels</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="queue-filters">
+      <button class="filter-pill active" data-queue-filter="all">All</button>
+      <button class="filter-pill" data-queue-filter="draft">Draft</button>
+      <button class="filter-pill" data-queue-filter="posted">Posted</button>
+    </div>
+
+    <div id="queue-list" class="queue-list"></div>
+  </div><!-- /tab-queue -->
+
+
+  <!-- ── TAB: SETTINGS ─────────────────────────────────────────────────────── -->
+  <div class="tab-content" id="tab-settings">
+    <div class="tab-hero">
+      <div class="tab-hero-title">⚙️ Settings</div>
+    </div>
+
+    <!-- API key -->
+    <div class="settings-card">
+      <div class="settings-card-title">🔑 Anthropic API Key</div>
+      <div class="settings-card-body">
+        <div id="api-key-status" class="api-status-indicator"></div>
+        <div class="api-key-input-row">
+          <input type="password" id="api-key-input" class="modal-input" placeholder="sk-ant-api03-..." />
+          <button class="btn-primary-sm" id="save-api-key-btn">Save</button>
+        </div>
+        <p class="settings-hint">Get your key at <strong>console.anthropic.com</strong></p>
+      </div>
+    </div>
+
+    <!-- Model selector -->
+    <div class="settings-card">
+      <div class="settings-card-title">🤖 Claude Model</div>
+      <div class="settings-card-body">
+        <select id="model-select" class="modal-select">
+          <option value="claude-sonnet-4-5-20250929" selected>Claude Sonnet (recommended)</option>
+          <option value="claude-haiku-4-5-20251001">Claude Haiku (faster, cheaper)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- KB viewer -->
+    <div class="settings-card">
+      <div class="settings-card-title">📖 Knowledge Base</div>
+      <div class="settings-card-body">
+        <button class="btn-outline full-width" id="view-kb-btn">View KB</button>
+        <div id="kb-viewer" style="display:none; margin-top:12px;"></div>
+      </div>
+    </div>
+
+    <!-- App info -->
+    <div class="settings-card">
+      <div class="settings-card-title">ℹ️ App Info</div>
+      <div class="settings-card-body">
+        <div class="info-row"><span>Version</span><span>1.0.0</span></div>
+        <div class="info-row"><span>Stories</span><span id="info-stories">—</span></div>
+        <div class="info-row"><span>Raw Ideas</span><span id="info-ideas">—</span></div>
+        <div class="info-row"><span>Total Posts</span><span id="info-posts">—</span></div>
+      </div>
+    </div>
+  </div><!-- /tab-settings -->
+
+
+  <!-- ── Bottom Navigation ─────────────────────────────────────────────────── -->
+  <nav class="bottom-nav" id="bottom-nav">
+    <button class="nav-btn active" data-tab="create">
+      <span class="nav-icon">✍️</span>
+      <span class="nav-label">Create</span>
+    </button>
+    <button class="nav-btn" data-tab="intel">
+      <span class="nav-icon">📡</span>
+      <span class="nav-label">Intel</span>
+    </button>
+    <button class="nav-btn" data-tab="library">
+      <span class="nav-icon">📚</span>
+      <span class="nav-label">Library</span>
+      <span class="nav-badge" id="library-badge" style="display:none">0</span>
+    </button>
+    <button class="nav-btn" data-tab="queue">
+      <span class="nav-icon">📅</span>
+      <span class="nav-label">Queue</span>
+    </button>
+    <button class="nav-btn" data-tab="settings">
+      <span class="nav-icon">⚙️</span>
+      <span class="nav-label">Settings</span>
+      <span class="nav-badge alert" id="settings-badge" style="display:none">!</span>
+    </button>
+  </nav>
+
+</div><!-- /app -->
+
+
+<!-- ── Modals & Overlays ──────────────────────────────────────────────────── -->
+
+<!-- Story picker (bottom sheet) -->
+<div class="sheet-overlay" id="story-sheet-overlay" style="display:none">
+  <div class="bottom-sheet" id="story-sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">Choose a Story</div>
+    <div id="story-picker-list" class="story-picker-list"></div>
+    <button class="btn-outline full-width" id="close-story-sheet">Cancel</button>
+  </div>
+</div>
+
+<!-- Intel picker (bottom sheet) -->
+<div class="sheet-overlay" id="intel-sheet-overlay" style="display:none">
+  <div class="bottom-sheet" id="intel-sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-title">Use Intel Context</div>
+    <div id="intel-picker-list" class="intel-picker-list"></div>
+    <button class="btn-outline full-width" id="close-intel-sheet">Cancel</button>
+  </div>
+</div>
+
+<!-- Content expand modal -->
+<div class="modal-overlay" id="content-modal" style="display:none">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <div class="modal-title" id="content-modal-title">Post</div>
+      <button class="modal-close" id="close-content-modal">✕</button>
+    </div>
+    <div class="modal-platform-tabs" id="modal-platform-tabs"></div>
+    <textarea class="modal-content-editor" id="content-modal-editor"></textarea>
+    <div class="modal-footer">
+      <button class="btn-outline" id="modal-save-edit-btn">Save edits</button>
+      <button class="btn-copy" id="modal-copy-btn">📋 Copy</button>
+    </div>
+  </div>
+</div>
+
+<!-- "Did you post?" overlay -->
+<div class="post-confirm-overlay" id="post-confirm-overlay" style="display:none">
+  <div class="post-confirm-box">
+    <div class="post-confirm-emoji">📋</div>
+    <div class="post-confirm-title">Copied!</div>
+    <div class="post-confirm-subtitle">Did you post it?</div>
+    <div class="post-confirm-actions">
+      <button class="btn-outline" id="post-confirm-no">Not yet</button>
+      <button class="btn-primary" id="post-confirm-yes">✅ Yes, I posted!</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confetti canvas -->
+<canvas id="confetti-canvas" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:9999;"></canvas>
+
+<!-- Toast -->
+<div class="toast" id="toast" style="display:none"></div>
+
+<!-- No API key banner -->
+<div class="setup-banner" id="setup-banner" style="display:none">
+  <span>⚠️  Add your API key in</span>
+  <button class="setup-banner-btn" id="setup-banner-btn">⚙️ Settings</button>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
