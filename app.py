@@ -402,17 +402,99 @@ def fetch_linkedin_apify():
         return [], False
 
 
-def fetch_instagram_apify():
-    """Instagram hashtag search via Apify — real posts ranked by engagement.
-    Scrapes Mir's travel/nomad hashtags, scores posts, flags outliers."""
+def fetch_instagram(hashtags=None):
+    """Unified Instagram fetcher. Priority: Instaloader (free) → Apify.
+
+    Instaloader scrapes public hashtag pages directly — no API key needed.
+    Apify is the fallback using residential proxies for reliability.
+    Returns (articles, method_used) where method_used is 'instaloader'|'apify'|'none'.
+    """
+    if hashtags is None:
+        hashtags = _INSTAGRAM_HASHTAGS
+
+    # 1. Instaloader — free, no API key, works for public hashtags
+    posts = _fetch_instagram_instaloader(hashtags)
+    if posts:
+        return posts, 'instaloader'
+
+    logger.warning("Instaloader Instagram returned 0 posts — trying Apify")
+
+    # 2. Apify fallback
+    posts, used = _fetch_instagram_apify_raw(hashtags)
+    return posts, ('apify' if used else 'none')
+
+
+def _fetch_instagram_instaloader(hashtags):
+    """Scrape Instagram hashtags via Instaloader (no API key needed for public content)."""
+    try:
+        import instaloader
+        from itertools import islice as _islice
+    except ImportError:
+        logger.warning("instaloader not installed")
+        return []
+
+    L = instaloader.Instaloader(
+        download_pictures=False,
+        download_videos=False,
+        download_video_thumbnails=False,
+        save_metadata=False,
+        compress_json=False,
+        quiet=True,
+        request_timeout=30,
+    )
+
+    # Optional: login for better rate limits and more data
+    ig_user = os.environ.get('INSTAGRAM_USERNAME', '').strip()
+    ig_pass = os.environ.get('INSTAGRAM_PASSWORD', '').strip()
+    if ig_user and ig_pass:
+        try:
+            L.login(ig_user, ig_pass)
+            logger.info(f"Instaloader: logged in as @{ig_user}")
+        except Exception as e:
+            logger.warning(f"Instaloader login failed: {e} — continuing without login")
+
+    articles = []
+    for tag in hashtags:
+        try:
+            hashtag_obj = instaloader.Hashtag.from_name(L.context, tag)
+            for post in _islice(hashtag_obj.get_posts(), 8):
+                caption = (post.caption or '')[:300].strip()
+                likes = post.likes or 0
+                comments = post.comments or 0
+                views = (post.video_view_count or 0) if post.is_video else 0
+                owner = post.owner_username or 'unknown'
+                eng_score = likes + 3 * comments + 0.1 * views
+                summary = (
+                    f"Eng score: {int(eng_score)} | {likes:,} likes, {comments:,} comments"
+                    + (f", {views:,} views" if views else "")
+                    + f" | @{owner} | {caption[:180]}"
+                )
+                articles.append({
+                    'id': str(uuid.uuid4()),
+                    'source': f"Instagram #{tag}",
+                    'title': caption[:80] or f"Post by @{owner}",
+                    'url': f"https://www.instagram.com/p/{post.shortcode}/",
+                    'summary': summary,
+                    'category': 'instagram_posts',
+                    'cached_at': datetime.datetime.now().isoformat(),
+                    'score': int(eng_score),
+                })
+        except Exception as e:
+            logger.warning(f"Instaloader #{tag} error: {e}")
+
+    logger.info(f"Instaloader Instagram: {len(articles)} posts from {len(hashtags)} hashtags")
+    return articles
+
+
+def _fetch_instagram_apify_raw(hashtags):
+    """Internal: Apify Instagram scraper (used as fallback). Returns (articles, used)."""
     token = os.environ.get('APIFY_TOKEN')
     if not token:
-        return [], False  # (articles, apify_used)
+        return [], False
     try:
         from apify_client import ApifyClient
         apify = ApifyClient(token)
-        # Use hashtag URLs — more reliable than profile scraping for trend discovery
-        hashtag_urls = [f"https://www.instagram.com/explore/tags/{tag}/" for tag in _INSTAGRAM_HASHTAGS]
+        hashtag_urls = [f"https://www.instagram.com/explore/tags/{tag}/" for tag in hashtags]
         run = apify.actor("apify/instagram-scraper").call(run_input={
             "directUrls": hashtag_urls,
             "resultsType": "posts",
@@ -421,7 +503,7 @@ def fetch_instagram_apify():
         }, timeout_secs=120)
         items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
         if not items:
-            return [], True  # Apify used but nothing returned
+            return [], True
 
         def ig_score(i):
             return (i.get('likesCount') or 0) + \
@@ -451,15 +533,18 @@ def fetch_instagram_apify():
                 'category': 'instagram_posts',
                 'cached_at': datetime.datetime.now().isoformat(),
             })
-        outlier_count = sum(1 for s, _ in scored if s > threshold)
-        logger.info(f"Apify Instagram hashtags: {len(articles)} posts, {outlier_count} outliers")
         return articles, True
     except ImportError:
-        logger.warning("apify-client not installed")
         return [], False
     except Exception as e:
         logger.error(f"Apify Instagram error: {e}")
         return [], False
+
+
+def fetch_instagram_apify():
+    """Legacy wrapper — kept for backward compat. Use fetch_instagram() instead."""
+    posts, used = _fetch_instagram_apify_raw(_INSTAGRAM_HASHTAGS)
+    return posts, used
 
 
 def fetch_rss_fallback(queries_with_labels, platform_label):
@@ -503,20 +588,80 @@ def fetch_rss_fallback(queries_with_labels, platform_label):
 
 
 def fetch_reddit_intel(subreddits, platform_label):
-    """Fetch top posts from Reddit.
+    """Fetch Reddit posts. Priority: Apify → PRAW OAuth → RSS fallback.
 
-    Tries PRAW (official OAuth API) first — uses oauth.reddit.com which works from
-    Railway datacenters.  Falls back to RSS if credentials are not set.
+    Apify uses residential proxies so it's never blocked from Railway.
+    PRAW uses the official OAuth API (oauth.reddit.com, also not blocked).
+    RSS is the last resort and may be rate-limited from datacenter IPs.
     """
-    import time as _t
+    # 1. Apify reddit scraper — best option, uses residential proxies
+    if os.environ.get('APIFY_TOKEN'):
+        posts = _fetch_reddit_apify(subreddits, platform_label)
+        if posts:
+            return posts
+        logger.warning("Apify Reddit returned 0 posts — trying next method")
+
+    # 2. PRAW OAuth API — no proxy needed, official endpoint
     client_id = os.environ.get('REDDIT_CLIENT_ID', '').strip()
     client_secret = os.environ.get('REDDIT_CLIENT_SECRET', '').strip()
-
     if client_id and client_secret:
-        return _fetch_reddit_praw(subreddits, platform_label, client_id, client_secret)
-    else:
-        logger.warning("REDDIT_CLIENT_ID/SECRET not set — falling back to RSS")
-        return _fetch_reddit_rss(subreddits, platform_label)
+        posts = _fetch_reddit_praw(subreddits, platform_label, client_id, client_secret)
+        if posts:
+            return posts
+        logger.warning("PRAW returned 0 posts — falling back to RSS")
+
+    # 3. RSS fallback
+    return _fetch_reddit_rss(subreddits, platform_label)
+
+
+def _fetch_reddit_apify(subreddits, platform_label):
+    """Fetch Reddit top posts via Apify actor (residential proxies, no Reddit creds needed)."""
+    try:
+        from apify_client import ApifyClient
+        apify = ApifyClient(os.environ['APIFY_TOKEN'])
+        articles = []
+        for sub in subreddits:
+            try:
+                run = apify.actor("trudax/reddit-scraper").call(run_input={
+                    "searches": [{
+                        "type": "community",
+                        "community": sub,
+                        "sort": "top",
+                        "time": "week",
+                        "maxItems": 8,
+                    }],
+                    "maxItems": 8,
+                }, timeout_secs=90)
+                items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
+                for item in items:
+                    title = (item.get('title') or '').strip()
+                    if not title or title.lower().startswith(('[deleted]', '[removed]')):
+                        continue
+                    score = item.get('score') or item.get('upvotes') or 0
+                    num_comments = item.get('numComments') or item.get('commentsCount') or 0
+                    body = (item.get('text') or item.get('body') or '')[:200].strip()
+                    summary = body or f"{score:,} upvotes · {num_comments:,} comments"
+                    articles.append({
+                        'id': str(uuid.uuid4()),
+                        'source': f"Reddit r/{sub}",
+                        'title': title,
+                        'url': item.get('url') or item.get('link', ''),
+                        'summary': summary,
+                        'category': platform_label,
+                        'cached_at': datetime.datetime.now().isoformat(),
+                        'score': score,
+                        'comments': num_comments,
+                    })
+            except Exception as e:
+                logger.warning(f"Apify Reddit r/{sub} error: {e}")
+        logger.info(f"Apify Reddit {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
+        return articles
+    except ImportError:
+        logger.warning("apify-client not installed")
+        return []
+    except Exception as e:
+        logger.error(f"Apify Reddit init error: {e}")
+        return []
 
 
 def _fetch_reddit_praw(subreddits, platform_label, client_id, client_secret):
@@ -716,41 +861,50 @@ def fetch_and_cache_intel():
         li_apify_error = str(e)
         _log_intel_source(run_at, 'Apify LinkedIn keyword search', 'apify_linkedin', 0, success=False, error=li_apify_error)
 
+    # ── Instagram: Instaloader (free) → Apify fallback ───────────────────────
     try:
-        ig_posts, ig_used = fetch_instagram_apify()
-        if ig_used and not ig_posts:
-            ig_apify_error = 'Apify ran but returned 0 Instagram posts'
-        _log_intel_source(run_at, 'Apify Instagram hashtag search', 'apify_instagram',
-                          len(ig_posts), success=ig_used, error=ig_apify_error)
+        ig_posts, ig_method = fetch_instagram()
+        _ig_source_labels = {
+            'instaloader': ('Instaloader Instagram hashtags', 'instagram_instaloader'),
+            'apify':       ('Apify Instagram hashtag search', 'apify_instagram'),
+            'none':        ('Instagram (no method available)', 'instagram_none'),
+        }
+        ig_label, ig_type = _ig_source_labels.get(ig_method, ('Instagram', 'instagram_unknown'))
+        _log_intel_source(run_at, ig_label, ig_type,
+                          len(ig_posts), success=len(ig_posts) > 0,
+                          error='' if ig_posts else f'0 posts via {ig_method}')
     except Exception as e:
-        ig_posts, ig_used = [], False
-        ig_apify_error = str(e)
-        _log_intel_source(run_at, 'Apify Instagram hashtag search', 'apify_instagram', 0, success=False, error=ig_apify_error)
+        ig_posts, ig_method = [], 'none'
+        _log_intel_source(run_at, 'Instagram', 'instagram_none', 0, success=False, error=str(e))
 
     articles.extend(li_posts)
     articles.extend(ig_posts)
-    logger.info(f"Apify: {len(li_posts)} LinkedIn + {len(ig_posts)} Instagram posts")
+    logger.info(f"LinkedIn (Apify): {len(li_posts)} | Instagram ({ig_method}): {len(ig_posts)}")
 
-    # ── 3. Reddit — community discussion data (PRAW OAuth or RSS fallback) ────────
-    _has_reddit_creds = bool(os.environ.get('REDDIT_CLIENT_ID') and os.environ.get('REDDIT_CLIENT_SECRET'))
-    _reddit_source_type = 'reddit_praw' if _has_reddit_creds else 'reddit_rss'
-    _reddit_no_creds_err = '' if _has_reddit_creds else 'Add REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET in Settings to enable PRAW'
+    # ── 3. Reddit: Apify → PRAW → RSS ────────────────────────────────────────
     li_reddit = fetch_reddit_intel(_LINKEDIN_SUBREDDITS, 'linkedin_posts')
     ig_reddit = fetch_reddit_intel(_INSTAGRAM_SUBREDDITS, 'instagram_posts')
     reddit_count = len(li_reddit) + len(ig_reddit)
-    _log_intel_source(run_at, 'Reddit (B2B/marketing subreddits)', _reddit_source_type,
+    # Detect which method was actually used for accurate log labels
+    _has_apify   = bool(os.environ.get('APIFY_TOKEN'))
+    _has_praw    = bool(os.environ.get('REDDIT_CLIENT_ID') and os.environ.get('REDDIT_CLIENT_SECRET'))
+    _reddit_type = 'reddit_apify' if _has_apify else ('reddit_praw' if _has_praw else 'reddit_rss')
+    _reddit_method_name = 'Apify' if _has_apify else ('PRAW OAuth' if _has_praw else 'RSS')
+    _reddit_err  = '' if reddit_count > 0 else (
+        '0 posts — Apify actor may need a moment, retry refresh' if _has_apify else
+        'Add APIFY_TOKEN or REDDIT credentials in Settings'
+    )
+    _log_intel_source(run_at, f'Reddit B2B/marketing ({_reddit_method_name})', _reddit_type,
                       len(li_reddit), success=len(li_reddit) > 0,
-                      error=_reddit_no_creds_err if not _has_reddit_creds and len(li_reddit) == 0 else
-                            '0 posts returned' if len(li_reddit) == 0 else '')
-    _log_intel_source(run_at, 'Reddit (travel/nomad subreddits)', _reddit_source_type,
+                      error=_reddit_err if len(li_reddit) == 0 else '')
+    _log_intel_source(run_at, f'Reddit travel/nomad ({_reddit_method_name})', _reddit_type,
                       len(ig_reddit), success=len(ig_reddit) > 0,
-                      error=_reddit_no_creds_err if not _has_reddit_creds and len(ig_reddit) == 0 else
-                            '0 posts returned' if len(ig_reddit) == 0 else '')
+                      error=_reddit_err if len(ig_reddit) == 0 else '')
     articles.extend(li_reddit)
     articles.extend(ig_reddit)
-    logger.info(f"Reddit ({'PRAW' if _has_reddit_creds else 'RSS'}): {reddit_count} total posts")
+    logger.info(f"Reddit ({_reddit_method_name}): {reddit_count} total posts")
 
-    has_deep = bool(li_posts or ig_posts)  # True only when Apify returned real engagement data
+    has_deep = bool(li_posts or ig_posts or li_reddit or ig_reddit)  # True when any real social data came in
 
     if articles:
         with get_db() as conn:

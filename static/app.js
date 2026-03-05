@@ -944,13 +944,13 @@ async function loadIntel() {
     data.articles.slice(0, 20).forEach(article => {
       const el = document.createElement('div');
       el.className = 'intel-article';
-      // Detect source type for chip
+      // Detect source type for chip — covers Apify, Instaloader, PRAW, RSS variants
       const src = article.source || '';
       let chip = '';
-      if (src.startsWith('Reddit')) chip = '<span class="src-chip chip-reddit">Reddit</span>';
-      else if (src.includes('LinkedIn') || src.includes('Apify') && src.includes('keyword')) chip = '<span class="src-chip chip-linkedin">Apify LinkedIn</span>';
-      else if (src.includes('Instagram') || src.includes('Apify') && src.includes('hashtag')) chip = '<span class="src-chip chip-instagram">Apify Instagram</span>';
-      else chip = '<span class="src-chip chip-news">Google News</span>';
+      if (src.startsWith('Reddit'))       chip = '<span class="src-chip chip-reddit">Reddit</span>';
+      else if (src.startsWith('Instagram #') || src.includes('Instagram')) chip = '<span class="src-chip chip-instagram">Instagram</span>';
+      else if (src.includes('LinkedIn'))  chip = '<span class="src-chip chip-linkedin">LinkedIn</span>';
+      else                                chip = '<span class="src-chip chip-news">Google News</span>';
       const linkEl = article.url ? `<a href="${article.url}" target="_blank" class="intel-source-link">🔗</a>` : '';
       el.innerHTML = `
         <div class="intel-article-header">
@@ -998,10 +998,15 @@ async function loadIntelSources() {
     if (!data || !data.sources || !data.sources.length) return;
 
     const typeLabel = {
-      'google_news_rss': '📰 Google News RSS',
-      'apify_linkedin':  '🔗 Apify LinkedIn',
-      'apify_instagram': '📸 Apify Instagram',
-      'reddit_rss':      '💬 Reddit RSS',
+      'google_news_rss':        '📰 Google News RSS',
+      'apify_linkedin':         '🔗 Apify LinkedIn',
+      'apify_instagram':        '📸 Apify Instagram',
+      'instagram_instaloader':  '📸 Instaloader (free)',
+      'instagram_apify':        '📸 Apify Instagram',
+      'instagram_none':         '📸 Instagram (unavailable)',
+      'reddit_apify':           '💬 Reddit via Apify',
+      'reddit_praw':            '💬 Reddit via PRAW OAuth',
+      'reddit_rss':             '💬 Reddit RSS fallback',
     };
 
     list.innerHTML = data.sources.map(s => {
