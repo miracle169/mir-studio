@@ -675,6 +675,7 @@ function renderContentSection(platform, listId, countId, label) {
         <button class="card-btn" data-action="expand" data-id="${item.id}" data-platform="${platform}">View</button>
         ${item.status !== 'posted' ? `<button class="card-btn green" data-action="mark-posted" data-id="${item.id}" data-platform="${platform}">✅ Posted</button>` : ''}
         ${item.status === 'posted' ? `<button class="card-btn" data-action="repurpose" data-id="${item.id}">♻️ Repurpose</button>` : ''}
+        ${item.status !== 'posted' ? `<button class="card-btn red" data-action="discard-card" data-id="${item.id}">🗑 Discard</button>` : ''}
       </div>
     `;
 
@@ -687,6 +688,7 @@ function renderContentSection(platform, listId, countId, label) {
         if (action === 'expand') openContentModal(id, p);
         if (action === 'mark-posted') markPostedFromCard(id, p);
         if (action === 'repurpose') repurposeItem(id, p);
+        if (action === 'discard-card') discardFromCard(id);
       });
     });
 
@@ -738,6 +740,19 @@ function repurposeItem(itemId, platform) {
   switchTab('create');
   document.querySelector('.capture-zone').scrollIntoView({ behavior: 'smooth' });
   toast('♻️ Ready to repurpose — edit and generate.');
+}
+
+async function discardFromCard(itemId) {
+  const reason = prompt('Why discard? (optional — helps improve future content)\n\nExamples: "too generic", "wrong tone", "sounds like AI"') ?? '';
+  try {
+    await POST(`/api/content/${itemId}/discard`, { reason, pattern_notes: reason });
+    // Remove the card from local state and re-render
+    state.allContent = state.allContent.filter(i => i.id !== itemId);
+    renderContent();
+    toast('🗑 Discarded');
+  } catch (e) {
+    toast('Failed to discard — try again');
+  }
 }
 
 // ── Content modal (expand + edit) ─────────────────────────────────────────

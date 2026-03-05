@@ -257,23 +257,21 @@ def get_story_context(story_id):
 # ── Intel sources: 7-day filtered, LinkedIn + Instagram focused ───────────────
 # Google News &tbs=qdr:w = past week. &hl=en-US for English results.
 RSS_SOURCES = [
-    # LinkedIn trending — Mir's domain
-    ("LinkedIn — Creator Economy",        "https://news.google.com/rss/search?q=creator+economy+linkedin&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
-    ("LinkedIn — B2B Influencer Marketing","https://news.google.com/rss/search?q=B2B+influencer+marketing+creators&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
-    ("LinkedIn — Community Building",     "https://news.google.com/rss/search?q=community+building+growth+strategy&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
-    ("LinkedIn — Justin Welsh",           "https://news.google.com/rss/search?q=%22Justin+Welsh%22+linkedin+creator&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_accounts"),
-    ("LinkedIn — Lara Acosta",            "https://news.google.com/rss/search?q=%22Lara+Acosta%22+linkedin+personal+brand&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_accounts"),
-    ("LinkedIn — Creator ROI Trends",     "https://news.google.com/rss/search?q=creator+ROI+B2B+influencer+2026&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_accounts"),
-    # Instagram trending — Mir's domain
-    ("Instagram — Indian Passport Travel","https://news.google.com/rss/search?q=indian+passport+travel+visa+tips&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
-    ("Instagram — Slow Travel",           "https://news.google.com/rss/search?q=slow+travel+digital+nomad+instagram&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
-    ("Instagram — Remote Work Lifestyle", "https://news.google.com/rss/search?q=remote+work+nomad+lifestyle+reel+viral&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
-    ("Instagram — SEA Nomad Hubs",        "https://news.google.com/rss/search?q=bali+chiang+mai+nomad+instagram+2026&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_accounts"),
-    ("Instagram — Indian Creator Abroad", "https://news.google.com/rss/search?q=indian+creator+abroad+content+instagram&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_accounts"),
-    # Industry blogs (fast-updating)
-    ("Social Media Examiner",  "https://www.socialmediaexaminer.com/feed/",         "industry"),
-    ("Buffer Blog",            "https://buffer.com/resources/feed/",                "industry"),
-    ("Creator Economy Insider","https://news.google.com/rss/search?q=creator+economy+newsletter+2026&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "industry"),
+    # LinkedIn domain — broad queries that consistently return news articles
+    ("Creator Economy News",       "https://news.google.com/rss/search?q=creator+economy+monetization&hl=en-US&gl=US&ceid=US:en", "linkedin_posts"),
+    ("B2B Influencer Marketing",   "https://news.google.com/rss/search?q=B2B+influencer+marketing+strategy&hl=en-US&gl=US&ceid=US:en", "linkedin_posts"),
+    ("Community Building",         "https://news.google.com/rss/search?q=community+building+business+growth&hl=en-US&gl=US&ceid=US:en", "linkedin_posts"),
+    ("Content Marketing LinkedIn", "https://news.google.com/rss/search?q=content+marketing+personal+brand+LinkedIn&hl=en-US&gl=US&ceid=US:en", "linkedin_posts"),
+    ("Creator Monetization",       "https://news.google.com/rss/search?q=creator+monetization+brand+deals+2026&hl=en-US&gl=US&ceid=US:en", "linkedin_posts"),
+    # Instagram domain — broad travel/nomad queries
+    ("Digital Nomad News",         "https://news.google.com/rss/search?q=digital+nomad+remote+work+2026&hl=en-US&gl=US&ceid=US:en", "instagram_posts"),
+    ("Slow Travel Trends",         "https://news.google.com/rss/search?q=slow+travel+Southeast+Asia+backpacking&hl=en-US&gl=US&ceid=US:en", "instagram_posts"),
+    ("Indian Travel Passport",     "https://news.google.com/rss/search?q=Indian+passport+travel+visa+abroad&hl=en-US&gl=US&ceid=US:en", "instagram_posts"),
+    ("Remote Work Lifestyle",      "https://news.google.com/rss/search?q=remote+work+location+independent+nomad&hl=en-US&gl=US&ceid=US:en", "instagram_posts"),
+    # Industry feeds (real blogs, fast-updating)
+    ("Social Media Examiner",      "https://www.socialmediaexaminer.com/feed/",  "linkedin_posts"),
+    ("Buffer Blog",                "https://buffer.com/resources/feed/",         "linkedin_posts"),
+    ("Nomadic Matt Blog",          "https://www.nomadicmatt.com/travel-blog/feed/", "instagram_posts"),
 ]
 
 
@@ -454,45 +452,103 @@ def fetch_instagram_apify():
         return [], False
 
 
+def fetch_rss_fallback(queries_with_labels, platform_label):
+    """Google News RSS fallback — used when Apify is unavailable.
+    Takes a list of (label, search_query) tuples and fetches Google News RSS for each."""
+    articles = []
+    cutoff_ts = _time.time() - (30 * 24 * 3600)
+    for label, query in queries_with_labels:
+        try:
+            encoded = query.replace(' ', '+')
+            url = f"https://news.google.com/rss/search?q={encoded}&hl=en-US&gl=US&ceid=US:en"
+            feed = feedparser.parse(url)
+            added = 0
+            for entry in feed.entries[:5]:
+                pub = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
+                if pub:
+                    import time as _t
+                    if _t.mktime(pub) < cutoff_ts:
+                        continue
+                title = getattr(entry, 'title', '').strip()
+                if not title:
+                    continue
+                summary = re.sub('<[^<]+?>', '', getattr(entry, 'summary', ''))[:250]
+                articles.append({
+                    'id': str(uuid.uuid4()),
+                    'source': f"Google News — {label}",
+                    'title': title,
+                    'url': getattr(entry, 'link', ''),
+                    'summary': summary,
+                    'category': platform_label,
+                    'cached_at': datetime.datetime.now().isoformat(),
+                })
+                added += 1
+                if added >= 3:
+                    break
+        except Exception as e:
+            logger.warning(f"RSS fallback '{label}' error: {e}")
+    logger.info(f"RSS fallback {platform_label}: {len(articles)} articles from {len(queries_with_labels)} queries")
+    return articles
+
+
 def fetch_reddit_intel(subreddits, platform_label):
-    """Free Reddit API fallback — no key needed. Fetches top posts of the week
-    from the given subreddits and formats them as intel articles."""
+    """Fetch top posts from relevant subreddits — best-effort (Railway IPs may be blocked)."""
     import requests as _req
-    headers = {"User-Agent": "MirStudio/2.0 (personal content tool)"}
+    import time as _t
+    headers = {"User-Agent": "MirStudio/2.0 (personal-content-research-tool)"}
+    cutoff_ts = _t.time() - (7 * 24 * 3600)
     articles = []
     for sub in subreddits:
         try:
             url = f"https://www.reddit.com/r/{sub}/top.json?t=week&limit=8"
             resp = _req.get(url, headers=headers, timeout=10)
             if resp.status_code != 200:
+                logger.warning(f"Reddit r/{sub}: HTTP {resp.status_code} (likely datacenter block)")
                 continue
             data = resp.json()
-            for post in data.get('data', {}).get('children', []):
-                p = post.get('data', {})
-                score = p.get('score', 0)
-                num_comments = p.get('num_comments', 0)
-                title = p.get('title', '').strip()
-                selftext = (p.get('selftext') or '')[:250].strip()
-                permalink = p.get('permalink', '')
+            posts = data.get('data', {}).get('children', [])
+            for post in posts:
+                d = post.get('data', {})
+                created = d.get('created_utc', 0)
+                if created < cutoff_ts:
+                    continue
+                title = d.get('title', '').strip()
                 if not title:
                     continue
+                score = d.get('score', 0)
+                num_comments = d.get('num_comments', 0)
+                selftext = (d.get('selftext', '') or '')[:200].strip()
                 articles.append({
                     'id': str(uuid.uuid4()),
                     'source': f"Reddit r/{sub}",
                     'title': title,
-                    'url': f"https://reddit.com{permalink}",
-                    'summary': (
-                        f"r/{sub} | {score} upvotes, {num_comments} comments this week | "
-                        f"{selftext or 'Link post'}"
-                    ),
+                    'url': f"https://reddit.com{d.get('permalink', '')}",
+                    'summary': selftext or f"↑{score} points · {num_comments} comments",
                     'category': platform_label,
                     'cached_at': datetime.datetime.now().isoformat(),
+                    'engagement_score': score + num_comments * 2,
                 })
         except Exception as e:
             logger.warning(f"Reddit r/{sub} error: {e}")
-            continue
     logger.info(f"Reddit {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
     return articles
+
+
+# Fallback query sets (used when Apify is unavailable)
+_LINKEDIN_RSS_FALLBACK = [
+    ("creator economy",       "creator economy monetization brand deals"),
+    ("B2B influencer",        "B2B influencer marketing strategy 2026"),
+    ("community building",    "community building business growth strategy"),
+    ("content marketing",     "content marketing personal brand LinkedIn"),
+    ("sales marketing",       "sales marketing creator outreach trends"),
+]
+_INSTAGRAM_RSS_FALLBACK = [
+    ("digital nomad",         "digital nomad remote work lifestyle 2026"),
+    ("slow travel",           "slow travel Southeast Asia backpacking budget"),
+    ("Indian passport",       "Indian passport travel visa abroad tips"),
+    ("remote work travel",    "remote work location independent travel"),
+    ("travel content",        "travel content creator Instagram reels tips"),
+]
 
 
 def fetch_and_cache_intel():
@@ -501,7 +557,7 @@ def fetch_and_cache_intel():
     logger.info("Intel pipeline running...")
     api_key = os.environ.get('ANTHROPIC_API_KEY')
 
-    # Hard cutoff: only articles published in the past 7 days
+    # 7-day cutoff — only fresh trending data
     cutoff_ts = _time.time() - (7 * 24 * 3600)
 
     articles = []
@@ -537,32 +593,25 @@ def fetch_and_cache_intel():
         except Exception as e:
             logger.error(f"RSS error {name}: {e}")
 
-    # ── Social data: Apify (keyword/hashtag) with Reddit fallback ─────────────────
-    token = os.environ.get('APIFY_TOKEN')
+    # ── Social data: ALL THREE sources run simultaneously ─────────────────────────
 
-    # LinkedIn: keyword-based Apify search → Reddit fallback
-    li_posts, li_apify_used = fetch_linkedin_apify()
-    if li_posts:
-        articles.extend(li_posts)
-        logger.info(f"LinkedIn via Apify keyword search: {len(li_posts)} posts")
-    else:
-        li_reddit = fetch_reddit_intel(_LINKEDIN_SUBREDDITS, 'linkedin_posts')
-        articles.extend(li_reddit)
-        reason = "Apify limit/error" if (token and li_apify_used) else "no Apify token"
-        logger.info(f"LinkedIn via Reddit fallback ({reason}): {len(li_reddit)} posts")
+    # 1. Apify — keyword LinkedIn search + hashtag Instagram search (real engagement data)
+    li_posts, _ = fetch_linkedin_apify()
+    ig_posts, _ = fetch_instagram_apify()
+    articles.extend(li_posts)
+    articles.extend(ig_posts)
+    logger.info(f"Apify: {len(li_posts)} LinkedIn keyword posts + {len(ig_posts)} Instagram hashtag posts")
 
-    # Instagram: hashtag-based Apify search → Reddit fallback
-    ig_posts, ig_apify_used = fetch_instagram_apify()
-    if ig_posts:
-        articles.extend(ig_posts)
-        logger.info(f"Instagram via Apify hashtag search: {len(ig_posts)} posts")
-    else:
-        ig_reddit = fetch_reddit_intel(_INSTAGRAM_SUBREDDITS, 'instagram_posts')
-        articles.extend(ig_reddit)
-        reason = "Apify limit/error" if (token and ig_apify_used) else "no Apify token"
-        logger.info(f"Instagram via Reddit fallback ({reason}): {len(ig_reddit)} posts")
+    # 2. Reddit — best-effort community discussions (may be blocked from datacenter IPs)
+    li_reddit = fetch_reddit_intel(_LINKEDIN_SUBREDDITS, 'linkedin_posts')
+    ig_reddit = fetch_reddit_intel(_INSTAGRAM_SUBREDDITS, 'instagram_posts')
+    articles.extend(li_reddit)
+    articles.extend(ig_reddit)
+    logger.info(f"Reddit: {len(li_reddit)} LinkedIn + {len(ig_reddit)} Instagram discussions")
 
-    has_deep = bool(li_posts or ig_posts)  # True = real Apify engagement data available
+    # 3. Google News (via RSS_SOURCES at top) already ran above — covers both domains
+
+    has_deep = bool(li_posts or ig_posts)  # True = Apify returned real engagement data
 
     if articles:
         with get_db() as conn:
