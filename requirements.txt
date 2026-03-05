@@ -6,7 +6,7 @@ apscheduler==3.10.4
 python-dotenv==1.0.1
 gunicorn==22.0.0
 Werkzeug==3.0.4
-apify-client==1.8.1
+apify-client==2.5.0
 requests>=2.31.0
 praw>=7.8.0
 instaloader>=4.10
