@@ -455,6 +455,7 @@ def fetch_instagram_apify():
 def fetch_rss_fallback(queries_with_labels, platform_label):
     """Google News RSS fallback — used when Apify is unavailable.
     Takes a list of (label, search_query) tuples and fetches Google News RSS for each."""
+    import time as _time
     articles = []
     cutoff_ts = _time.time() - (30 * 24 * 3600)
     for label, query in queries_with_labels:
