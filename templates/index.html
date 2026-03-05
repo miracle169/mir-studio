@@ -187,9 +187,20 @@
       </div>
     </div>
 
+    <!-- Source status panel -->
+    <div class="intel-sources-panel" id="intel-sources-panel" style="display:none">
+      <button class="intel-sources-toggle" id="intel-sources-toggle">
+        <span>🔍 Data sources used</span>
+        <span class="intel-sources-arrow" id="intel-sources-arrow">▼</span>
+      </button>
+      <div class="intel-sources-body" id="intel-sources-body" style="display:none">
+        <div id="intel-sources-list"></div>
+      </div>
+    </div>
+
     <div id="intel-loading" class="loading-state" style="display:none">
       <div class="spinner-large"></div>
-      <p>Pulling from 12 sources...</p>
+      <p>Running all sources: Apify + Reddit + Google News...</p>
     </div>
 
     <div id="intel-empty" class="empty-state-full">
@@ -353,12 +364,28 @@
       </div>
     </div>
 
-    <!-- KB viewer -->
+    <!-- KB viewer + download -->
     <div class="settings-card">
       <div class="settings-card-title">📖 Knowledge Base</div>
       <div class="settings-card-body">
-        <button class="btn-outline full-width" id="view-kb-btn">View KB</button>
+        <p class="settings-hint" style="margin-bottom:8px">Your voice profile, stories, topics, and discard patterns — all continuously updated as you use the app.</p>
+        <div class="kb-btn-row">
+          <button class="btn-outline" id="view-kb-btn">View KB</button>
+          <a class="btn-outline" href="/api/kb/export?format=md" download="mir_kb.md" id="download-kb-md-btn">⬇ .md</a>
+          <a class="btn-outline" href="/api/kb/export?format=json" download="mir_kb.json" id="download-kb-json-btn">⬇ .json</a>
+        </div>
         <div id="kb-viewer" style="display:none; margin-top:12px;"></div>
+      </div>
+    </div>
+
+    <!-- Discard log -->
+    <div class="settings-card">
+      <div class="settings-card-title">🗑 Discard Log <span class="settings-hint">(training your taste)</span></div>
+      <div class="settings-card-body">
+        <p class="settings-hint">Every discard updates the KB so Claude avoids the same patterns.</p>
+        <div id="discard-log-list" class="discard-log-list">
+          <div class="empty-state" style="padding:12px">Loading...</div>
+        </div>
       </div>
     </div>
 

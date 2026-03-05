@@ -941,13 +941,26 @@ async function loadIntel() {
     // Articles
     const articlesEl = document.getElementById('intel-articles');
     articlesEl.innerHTML = '';
-    data.articles.slice(0, 15).forEach(article => {
+    data.articles.slice(0, 20).forEach(article => {
       const el = document.createElement('div');
       el.className = 'intel-article';
+      // Detect source type for chip
+      const src = article.source || '';
+      let chip = '';
+      if (src.startsWith('Reddit')) chip = '<span class="src-chip chip-reddit">Reddit</span>';
+      else if (src.includes('LinkedIn') || src.includes('Apify') && src.includes('keyword')) chip = '<span class="src-chip chip-linkedin">Apify LinkedIn</span>';
+      else if (src.includes('Instagram') || src.includes('Apify') && src.includes('hashtag')) chip = '<span class="src-chip chip-instagram">Apify Instagram</span>';
+      else chip = '<span class="src-chip chip-news">Google News</span>';
+      const linkEl = article.url ? `<a href="${article.url}" target="_blank" class="intel-source-link">🔗</a>` : '';
       el.innerHTML = `
+        <div class="intel-article-header">
+          ${chip}
+          <span class="intel-article-source-name">${src}</span>
+          ${linkEl}
+        </div>
         <div class="intel-article-title">${article.title}</div>
-        <div class="intel-article-source">${article.source}</div>
-        <button class="intel-article-use" data-text="From article '${article.title}' (${article.source}): ${article.summary}">Use as context</button>
+        ${article.summary ? `<div class="intel-article-summary">${article.summary.slice(0,150)}…</div>` : ''}
+        <button class="intel-article-use" data-text="From '${article.title}' (${src}): ${article.summary||''}">Use as context</button>
       `;
       articlesEl.appendChild(el);
     });
@@ -968,9 +981,60 @@ async function loadIntel() {
     emptyEl.style.display = 'none';
     contentEl.style.display = 'block';
 
+    // Load sources panel after content renders
+    loadIntelSources();
+
   } catch (err) {
     loadingEl.style.display = 'none';
     emptyEl.style.display = 'block';
+  }
+}
+
+async function loadIntelSources() {
+  try {
+    const data = await GET('/api/intel/sources');
+    const panel = document.getElementById('intel-sources-panel');
+    const list = document.getElementById('intel-sources-list');
+    if (!data || !data.sources || !data.sources.length) return;
+
+    const typeLabel = {
+      'google_news_rss': '📰 Google News RSS',
+      'apify_linkedin':  '🔗 Apify LinkedIn',
+      'apify_instagram': '📸 Apify Instagram',
+      'reddit_rss':      '💬 Reddit RSS',
+    };
+
+    list.innerHTML = data.sources.map(s => {
+      const ok = s.success && s.articles_found > 0;
+      const warn = s.success && s.articles_found === 0;
+      const fail = !s.success;
+      const icon = ok ? '✅' : warn ? '⚠️' : '❌';
+      const cls = ok ? 'source-ok' : warn ? 'source-warn' : 'source-fail';
+      const type = typeLabel[s.source_type] || s.source_type;
+      const err = s.error_msg ? `<div class="source-error">${s.error_msg}</div>` : '';
+      return `<div class="source-row ${cls}">
+        <span class="source-icon">${icon}</span>
+        <div class="source-info">
+          <div class="source-name">${s.source_name}</div>
+          <div class="source-meta">${type} · ${s.articles_found} items${err}</div>
+        </div>
+      </div>`;
+    }).join('');
+
+    const runAt = data.run_at ? new Date(data.run_at).toLocaleTimeString('en', {hour:'2-digit',minute:'2-digit'}) : '';
+    if (runAt) list.insertAdjacentHTML('afterbegin', `<div class="source-run-time">Last run: ${runAt}</div>`);
+
+    panel.style.display = 'block';
+
+    document.getElementById('intel-sources-toggle').addEventListener('click', () => {
+      const body = document.getElementById('intel-sources-body');
+      const arrow = document.getElementById('intel-sources-arrow');
+      const open = body.style.display !== 'none';
+      body.style.display = open ? 'none' : 'block';
+      arrow.textContent = open ? '▼' : '▲';
+    });
+  } catch (e) {
+    // silently fail
   }
 }
 
@@ -1193,6 +1257,28 @@ async function loadSettings() {
     document.getElementById('info-ideas').textContent = status.raw_ideas_count || 0;
     const total = (status.total_linkedin || 0) + (status.total_newsletter || 0) + (status.total_instagram || 0);
     document.getElementById('info-posts').textContent = total;
+  } catch {}
+
+  // Load discard log
+  try {
+    const logEl = document.getElementById('discard-log-list');
+    const data = await GET('/api/kb/export?format=json').catch(() => null);
+    if (!data) return;
+    const discards = data.discard_log || [];
+    if (!discards.length) {
+      logEl.innerHTML = '<div class="empty-state" style="padding:12px 0">No discards yet — discard content to teach your taste.</div>';
+      return;
+    }
+    logEl.innerHTML = discards.slice(0, 20).map(d => {
+      const preview = (d.raw_thought || d.pattern_notes || 'Discarded item').substring(0, 120);
+      const reason = (d.discard_reason || d.pattern_notes)
+        ? `<div class="discard-log-reason">"${(d.discard_reason || d.pattern_notes).substring(0, 80)}"</div>` : '';
+      const date = d.discarded_at ? `<div class="discard-log-date">${new Date(d.discarded_at).toLocaleDateString('en', {month:'short', day:'numeric'})}</div>` : '';
+      return `<div class="discard-log-item">
+        <div class="discard-log-preview">${preview}</div>
+        ${reason}${date}
+      </div>`;
+    }).join('');
   } catch {}
 }
 

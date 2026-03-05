@@ -148,6 +148,16 @@ def init_db():
                 added_at TEXT,
                 UNIQUE(platform, handle)
             );
+
+            CREATE TABLE IF NOT EXISTS intel_run_log (
+                id TEXT PRIMARY KEY,
+                run_at TEXT,
+                source_name TEXT,
+                source_type TEXT,
+                articles_found INTEGER DEFAULT 0,
+                success INTEGER DEFAULT 1,
+                error_msg TEXT
+            );
         """)
 
         # Initialize app_stats row if missing
@@ -493,45 +503,43 @@ def fetch_rss_fallback(queries_with_labels, platform_label):
 
 
 def fetch_reddit_intel(subreddits, platform_label):
-    """Fetch top posts from relevant subreddits — best-effort (Railway IPs may be blocked)."""
-    import requests as _req
+    """Fetch top posts from Reddit via RSS feeds (avoids datacenter IP blocks on JSON API)."""
     import time as _t
-    headers = {"User-Agent": "MirStudio/2.0 (personal-content-research-tool)"}
     cutoff_ts = _t.time() - (7 * 24 * 3600)
     articles = []
     for sub in subreddits:
         try:
-            url = f"https://www.reddit.com/r/{sub}/top.json?t=week&limit=8"
-            resp = _req.get(url, headers=headers, timeout=10)
-            if resp.status_code != 200:
-                logger.warning(f"Reddit r/{sub}: HTTP {resp.status_code} (likely datacenter block)")
+            # Use RSS instead of JSON API — less likely to be blocked from datacenter
+            rss_url = f"https://www.reddit.com/r/{sub}/top.rss?t=week&limit=8"
+            feed = feedparser.parse(rss_url, request_headers={
+                "User-Agent": "MirStudio/2.0 (+https://mir.up.railway.app)"
+            })
+            if feed.bozo and not feed.entries:
+                logger.warning(f"Reddit RSS r/{sub}: parse error or blocked")
                 continue
-            data = resp.json()
-            posts = data.get('data', {}).get('children', [])
-            for post in posts:
-                d = post.get('data', {})
-                created = d.get('created_utc', 0)
-                if created < cutoff_ts:
+            added = 0
+            for entry in feed.entries[:8]:
+                pub = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
+                if pub:
+                    if _t.mktime(pub) < cutoff_ts:
+                        continue
+                title = getattr(entry, 'title', '').strip()
+                if not title or title.lower().startswith('[deleted]'):
                     continue
-                title = d.get('title', '').strip()
-                if not title:
-                    continue
-                score = d.get('score', 0)
-                num_comments = d.get('num_comments', 0)
-                selftext = (d.get('selftext', '') or '')[:200].strip()
+                summary = re.sub('<[^<]+?>', '', getattr(entry, 'summary', ''))[:250].strip()
                 articles.append({
                     'id': str(uuid.uuid4()),
                     'source': f"Reddit r/{sub}",
                     'title': title,
-                    'url': f"https://reddit.com{d.get('permalink', '')}",
-                    'summary': selftext or f"↑{score} points · {num_comments} comments",
+                    'url': getattr(entry, 'link', ''),
+                    'summary': summary or 'Reddit community discussion',
                     'category': platform_label,
                     'cached_at': datetime.datetime.now().isoformat(),
-                    'engagement_score': score + num_comments * 2,
                 })
+                added += 1
         except Exception as e:
-            logger.warning(f"Reddit r/{sub} error: {e}")
-    logger.info(f"Reddit {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
+            logger.warning(f"Reddit RSS r/{sub} error: {e}")
+    logger.info(f"Reddit RSS {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
     return articles
 
 
@@ -552,27 +560,55 @@ _INSTAGRAM_RSS_FALLBACK = [
 ]
 
 
+def _log_intel_source(run_at, source_name, source_type, count, success=True, error=''):
+    """Store per-source stats for the last intel run."""
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO intel_run_log (id, run_at, source_name, source_type, articles_found, success, error_msg) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), run_at, source_name, source_type, count, 1 if success else 0, error or '')
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"intel log error: {e}")
+
+
 def fetch_and_cache_intel():
     """Pull RSS feeds (+ optional Apify) → cache → Claude analysis → store in DB."""
     import time as _time
     logger.info("Intel pipeline running...")
     api_key = os.environ.get('ANTHROPIC_API_KEY')
+    run_at = datetime.datetime.now().isoformat()
+
+    # Clear old run log for this run
+    try:
+        with get_db() as conn:
+            # Keep only last 2 runs worth of logs
+            conn.execute(
+                "DELETE FROM intel_run_log WHERE run_at < ?",
+                ((datetime.datetime.now() - datetime.timedelta(days=2)).isoformat(),)
+            )
+            conn.commit()
+    except Exception:
+        pass
 
     # 7-day cutoff — only fresh trending data
     cutoff_ts = _time.time() - (7 * 24 * 3600)
 
     articles = []
+
+    # ── 1. Google News RSS + Blog feeds ──────────────────────────────────────
     for name, url, category in RSS_SOURCES:
         try:
             feed = feedparser.parse(url)
             added = 0
-            for entry in feed.entries[:8]:  # Check up to 8, keep only fresh ones
-                # Date filter — drop anything older than 7 days
+            for entry in feed.entries[:8]:
                 pub = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
                 if pub:
                     entry_ts = _time.mktime(pub)
                     if entry_ts < cutoff_ts:
-                        continue  # Skip stale article
+                        continue
                 title = getattr(entry, 'title', '').strip()
                 if not title:
                     continue
@@ -584,35 +620,65 @@ def fetch_and_cache_intel():
                     'url': getattr(entry, 'link', ''),
                     'summary': summary,
                     'category': category,
-                    'cached_at': datetime.datetime.now().isoformat(),
+                    'cached_at': run_at,
                 })
                 added += 1
                 if added >= 3:
                     break
+            _log_intel_source(run_at, name, 'google_news_rss', added, success=True)
             if added == 0:
                 logger.warning(f"RSS '{name}': no fresh articles in past 7 days")
         except Exception as e:
             logger.error(f"RSS error {name}: {e}")
+            _log_intel_source(run_at, name, 'google_news_rss', 0, success=False, error=str(e))
 
-    # ── Social data: ALL THREE sources run simultaneously ─────────────────────────
+    rss_count = len(articles)
+    logger.info(f"Google News RSS: {rss_count} articles from {len(RSS_SOURCES)} sources")
 
-    # 1. Apify — keyword LinkedIn search + hashtag Instagram search (real engagement data)
-    li_posts, _ = fetch_linkedin_apify()
-    ig_posts, _ = fetch_instagram_apify()
+    # ── 2. Apify — real LinkedIn post engagement + Instagram hashtag data ─────
+    li_apify_error = ''
+    ig_apify_error = ''
+    try:
+        li_posts, li_used = fetch_linkedin_apify()
+        if li_used and not li_posts:
+            li_apify_error = 'Apify ran but returned 0 LinkedIn posts'
+        _log_intel_source(run_at, 'Apify LinkedIn keyword search', 'apify_linkedin',
+                          len(li_posts), success=li_used, error=li_apify_error)
+    except Exception as e:
+        li_posts, li_used = [], False
+        li_apify_error = str(e)
+        _log_intel_source(run_at, 'Apify LinkedIn keyword search', 'apify_linkedin', 0, success=False, error=li_apify_error)
+
+    try:
+        ig_posts, ig_used = fetch_instagram_apify()
+        if ig_used and not ig_posts:
+            ig_apify_error = 'Apify ran but returned 0 Instagram posts'
+        _log_intel_source(run_at, 'Apify Instagram hashtag search', 'apify_instagram',
+                          len(ig_posts), success=ig_used, error=ig_apify_error)
+    except Exception as e:
+        ig_posts, ig_used = [], False
+        ig_apify_error = str(e)
+        _log_intel_source(run_at, 'Apify Instagram hashtag search', 'apify_instagram', 0, success=False, error=ig_apify_error)
+
     articles.extend(li_posts)
     articles.extend(ig_posts)
-    logger.info(f"Apify: {len(li_posts)} LinkedIn keyword posts + {len(ig_posts)} Instagram hashtag posts")
+    logger.info(f"Apify: {len(li_posts)} LinkedIn + {len(ig_posts)} Instagram posts")
 
-    # 2. Reddit — best-effort community discussions (may be blocked from datacenter IPs)
+    # ── 3. Reddit RSS — community discussion data ─────────────────────────────
     li_reddit = fetch_reddit_intel(_LINKEDIN_SUBREDDITS, 'linkedin_posts')
     ig_reddit = fetch_reddit_intel(_INSTAGRAM_SUBREDDITS, 'instagram_posts')
+    reddit_count = len(li_reddit) + len(ig_reddit)
+    _log_intel_source(run_at, 'Reddit (B2B/marketing subreddits)', 'reddit_rss',
+                      len(li_reddit), success=len(li_reddit) > 0,
+                      error='0 posts — likely blocked from datacenter IP' if len(li_reddit) == 0 else '')
+    _log_intel_source(run_at, 'Reddit (travel/nomad subreddits)', 'reddit_rss',
+                      len(ig_reddit), success=len(ig_reddit) > 0,
+                      error='0 posts — likely blocked from datacenter IP' if len(ig_reddit) == 0 else '')
     articles.extend(li_reddit)
     articles.extend(ig_reddit)
-    logger.info(f"Reddit: {len(li_reddit)} LinkedIn + {len(ig_reddit)} Instagram discussions")
+    logger.info(f"Reddit RSS: {reddit_count} total posts")
 
-    # 3. Google News (via RSS_SOURCES at top) already ran above — covers both domains
-
-    has_deep = bool(li_posts or ig_posts)  # True = Apify returned real engagement data
+    has_deep = bool(li_posts or ig_posts)  # True only when Apify returned real engagement data
 
     if articles:
         with get_db() as conn:
@@ -1364,7 +1430,93 @@ def refresh_intel():
     t = threading.Thread(target=fetch_and_cache_intel)
     t.daemon = True
     t.start()
-    return jsonify({'ok': True, 'message': 'Refreshing intel... check back in 30 seconds.'})
+    return jsonify({'ok': True, 'message': 'Refreshing intel... check back in 60 seconds.'})
+
+
+@app.route('/api/intel/sources', methods=['GET'])
+def get_intel_sources():
+    """Return per-source stats from the last intel run."""
+    with get_db() as conn:
+        # Get the most recent run_at
+        latest = conn.execute(
+            "SELECT run_at FROM intel_run_log ORDER BY run_at DESC LIMIT 1"
+        ).fetchone()
+        if not latest:
+            return jsonify({'run_at': None, 'sources': []})
+        run_at = latest['run_at']
+        rows = conn.execute(
+            "SELECT source_name, source_type, articles_found, success, error_msg "
+            "FROM intel_run_log WHERE run_at = ? ORDER BY rowid",
+            (run_at,)
+        ).fetchall()
+    return jsonify({
+        'run_at': run_at,
+        'sources': [dict(r) for r in rows],
+    })
+
+
+@app.route('/api/kb/export', methods=['GET'])
+def export_kb():
+    """Download entire knowledge base as a structured JSON file."""
+    fmt = request.args.get('format', 'json')
+    with get_db() as conn:
+        profile = {r['key']: r['value'] for r in conn.execute("SELECT key, value FROM kb_voice_profile").fetchall()}
+        stories = [dict(r) for r in conn.execute("SELECT * FROM kb_story_bank ORDER BY created_at").fetchall()]
+        topics = [dict(r) for r in conn.execute(
+            "SELECT topic, platform, times_posted, last_posted_at FROM kb_topics_covered ORDER BY last_posted_at DESC LIMIT 100"
+        ).fetchall()]
+        discards = [dict(r) for r in conn.execute(
+            "SELECT platform, raw_thought, discard_reason, pattern_notes, discarded_at "
+            "FROM kb_discard_log ORDER BY discarded_at DESC LIMIT 100"
+        ).fetchall()]
+        raw_ideas = [dict(r) for r in conn.execute(
+            "SELECT thought, source, created_at FROM kb_raw_ideas ORDER BY created_at DESC LIMIT 200"
+        ).fetchall()]
+        stats = dict(conn.execute("SELECT * FROM app_stats WHERE id = 1").fetchone() or {})
+
+    kb = {
+        'exported_at': datetime.datetime.now().isoformat(),
+        'app': 'Mir Studio',
+        'voice_profile': profile,
+        'story_bank': stories,
+        'topics_covered': topics,
+        'discard_log': discards,
+        'raw_ideas': raw_ideas,
+        'stats': stats,
+    }
+
+    if fmt == 'md':
+        lines = [
+            f"# Mir Studio — Knowledge Base Export",
+            f"*Exported: {kb['exported_at']}*\n",
+            "## Voice Profile\n",
+        ]
+        for k, v in profile.items():
+            lines.append(f"**{k}**\n{v}\n")
+        lines.append("\n## Story Bank\n")
+        for s in stories:
+            lines.append(f"### {s.get('title','')}\n*Platform: {s.get('platform','')}*\n\n{s.get('story_snippet','')}\n")
+        lines.append("\n## Topics Covered (last 100)\n")
+        for t in topics:
+            lines.append(f"- **{t['topic']}** ({t['platform']}) — posted {t.get('times_posted',1)}× — last: {t.get('last_posted_at','')[:10]}")
+        lines.append("\n## Discard Log (patterns rejected)\n")
+        for d in discards:
+            if d.get('pattern_notes'):
+                lines.append(f"- [{d['platform']}] {d.get('pattern_notes','')} _{d.get('discarded_at','')[:10]}_")
+        lines.append("\n## Raw Ideas (last 200)\n")
+        for r in raw_ideas:
+            lines.append(f"- {r.get('thought','')[:120]} _{r.get('created_at','')[:10]}_")
+        content = '\n'.join(lines)
+        from flask import Response
+        return Response(content, mimetype='text/markdown',
+                       headers={'Content-Disposition': 'attachment; filename=mir_kb.md'})
+
+    from flask import Response
+    return Response(
+        json.dumps(kb, indent=2, ensure_ascii=False),
+        mimetype='application/json',
+        headers={'Content-Disposition': 'attachment; filename=mir_kb.json'}
+    )
 
 
 @app.route('/api/stories', methods=['GET'])
