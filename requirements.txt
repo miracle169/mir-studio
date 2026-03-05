@@ -5,3 +5,4 @@ apscheduler==3.10.4
 python-dotenv==1.0.1
 gunicorn==22.0.0
 Werkzeug==3.0.4
+apify-client==1.8.1

@@ -248,24 +248,94 @@ def get_story_context(story_id):
 # Google News &tbs=qdr:w = past week. &hl=en-US for English results.
 RSS_SOURCES = [
     # LinkedIn trending — Mir's domain
-    ("LinkedIn Pulse — Creator Economy",  "https://news.google.com/rss/search?q=creator+economy+linkedin+site:linkedin.com&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
-    ("LinkedIn Pulse — Community Building","https://news.google.com/rss/search?q=community+building+linkedin&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
-    ("LinkedIn Pulse — B2B Creators",     "https://news.google.com/rss/search?q=B2B+influencer+marketing+linkedin&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
-    ("LinkedIn Pulse — Influencer ROI",   "https://news.google.com/rss/search?q=influencer+marketing+ROI+B2B&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
+    ("LinkedIn — Creator Economy",        "https://news.google.com/rss/search?q=creator+economy+linkedin&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
+    ("LinkedIn — B2B Influencer Marketing","https://news.google.com/rss/search?q=B2B+influencer+marketing+creators&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
+    ("LinkedIn — Community Building",     "https://news.google.com/rss/search?q=community+building+growth+strategy&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_trending"),
+    ("LinkedIn — Justin Welsh",           "https://news.google.com/rss/search?q=%22Justin+Welsh%22+linkedin+creator&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_accounts"),
+    ("LinkedIn — Lara Acosta",            "https://news.google.com/rss/search?q=%22Lara+Acosta%22+linkedin+personal+brand&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_accounts"),
+    ("LinkedIn — Creator ROI Trends",     "https://news.google.com/rss/search?q=creator+ROI+B2B+influencer+2026&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "linkedin_accounts"),
     # Instagram trending — Mir's domain
-    ("Instagram Trend — Digital Nomad",   "https://news.google.com/rss/search?q=digital+nomad+instagram+trending&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
-    ("Instagram Trend — Remote Work",     "https://news.google.com/rss/search?q=remote+work+lifestyle+instagram+reel&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
-    ("Instagram Trend — Slow Travel",     "https://news.google.com/rss/search?q=slow+travel+instagram+viral&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
+    ("Instagram — Indian Passport Travel","https://news.google.com/rss/search?q=indian+passport+travel+visa+tips&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
+    ("Instagram — Slow Travel",           "https://news.google.com/rss/search?q=slow+travel+digital+nomad+instagram&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
+    ("Instagram — Remote Work Lifestyle", "https://news.google.com/rss/search?q=remote+work+nomad+lifestyle+reel+viral&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_trending"),
+    ("Instagram — SEA Nomad Hubs",        "https://news.google.com/rss/search?q=bali+chiang+mai+nomad+instagram+2026&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_accounts"),
+    ("Instagram — Indian Creator Abroad", "https://news.google.com/rss/search?q=indian+creator+abroad+content+instagram&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "instagram_accounts"),
     # Industry blogs (fast-updating)
     ("Social Media Examiner",  "https://www.socialmediaexaminer.com/feed/",         "industry"),
     ("Buffer Blog",            "https://buffer.com/resources/feed/",                "industry"),
-    ("Sprout Social Insights", "https://sproutsocial.com/insights/feed/",           "industry"),
-    ("Creator Economy Newsletter", "https://news.google.com/rss/search?q=creator+economy+newsletter+2026&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "industry"),
+    ("Creator Economy Insider","https://news.google.com/rss/search?q=creator+economy+newsletter+2026&tbs=qdr:w&hl=en-US&gl=US&ceid=US:en", "industry"),
 ]
 
 
+def fetch_instagram_apify():
+    """Optional: use Apify Instagram Scraper for real reels data from tracked accounts.
+    Returns list of article-like dicts. Falls back silently if APIFY_TOKEN not set."""
+    token = os.environ.get('APIFY_TOKEN')
+    if not token:
+        return []
+    # Tracked Instagram usernames (Mir's monitored accounts)
+    INSTAGRAM_HANDLES = [
+        "tanay.p", "nomadnumbers", "thewanderingquinn",
+        "passportbros_india", "workfromwherever",
+    ]
+    try:
+        from apify_client import ApifyClient
+        client = ApifyClient(token)
+        run_input = {
+            "directUrls": [f"https://www.instagram.com/{h}/" for h in INSTAGRAM_HANDLES],
+            "resultsType": "posts",
+            "resultsLimit": 6,  # 6 per account
+            "searchType": "hashtag",
+            "addParentData": False,
+        }
+        run = client.actor("apify/instagram-scraper").call(run_input=run_input, timeout_secs=90)
+        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+
+        # Compute engagement score: likes + 3*comments + 0.1*videoViewCount
+        scored = []
+        for item in items:
+            likes = item.get('likesCount', 0) or 0
+            comments = item.get('commentsCount', 0) or 0
+            views = item.get('videoViewCount', 0) or 0
+            score = likes + (3 * comments) + (0.1 * views)
+            scored.append((score, item))
+        if not scored:
+            return []
+
+        # Outlier detection: engagement > mean + 2*std
+        import statistics
+        scores = [s for s, _ in scored]
+        mean_s = statistics.mean(scores) if scores else 0
+        stdev_s = statistics.stdev(scores) if len(scores) > 1 else 0
+        threshold = mean_s + (2.0 * stdev_s)
+
+        articles = []
+        for score, item in scored:
+            caption = (item.get('caption') or '')[:200]
+            owner = item.get('ownerUsername', 'unknown')
+            is_outlier = score > threshold
+            articles.append({
+                'id': str(uuid.uuid4()),
+                'source': f"Instagram @{owner} {'⚡ OUTLIER' if is_outlier else ''}",
+                'title': caption[:80] or f"Reel by @{owner}",
+                'url': item.get('url', ''),
+                'summary': f"Engagement: {int(score)} ({int(likes)} likes, {int(comments)} comments). {caption[:120]}",
+                'category': 'instagram_accounts',
+                'cached_at': datetime.datetime.now().isoformat(),
+            })
+        logger.info(f"Apify Instagram: {len(articles)} posts fetched, "
+                    f"{sum(1 for s,_ in scored if s > threshold)} outliers")
+        return articles
+    except ImportError:
+        logger.warning("apify-client not installed; skipping Instagram scraper")
+        return []
+    except Exception as e:
+        logger.error(f"Apify Instagram error: {e}")
+        return []
+
+
 def fetch_and_cache_intel():
-    """Pull RSS feeds → cache → Claude analysis → store in DB."""
+    """Pull RSS feeds (+ optional Apify) → cache → Claude analysis → store in DB."""
     logger.info("Intel pipeline running...")
     api_key = os.environ.get('ANTHROPIC_API_KEY')
 
@@ -286,6 +356,12 @@ def fetch_and_cache_intel():
                 })
         except Exception as e:
             logger.error(f"RSS error {name}: {e}")
+
+    # Augment with real Instagram data if Apify token is configured
+    apify_posts = fetch_instagram_apify()
+    if apify_posts:
+        articles.extend(apify_posts)
+        logger.info(f"Total intel articles after Apify: {len(articles)}")
 
     if articles:
         with get_db() as conn:
@@ -325,51 +401,64 @@ def fetch_and_cache_intel():
             messages=[{
                 "role": "user",
                 "content": f"""Analyze these articles from the PAST 7 DAYS for Mir Tahmid Ali.
-Mir's domains: B2B creator marketing, community building, digital nomad / slow travel, remote work.
 
-ARTICLES (with sources):
+Mir's domains:
+- LinkedIn: B2B creator marketing, community building, influencer ROI, creator economy mechanics
+- Instagram: Slow travel on Indian passport, digital nomad logistics, remote work, SEA travel
+
+Creators Mir monitors on LinkedIn (to spot what's getting unusual engagement):
+Justin Welsh, Matt Gray, Lara Acosta, Richard van der Blom, Sam Szuchan, Jasmin Alic, Steph Smith
+
+Creators/topics Mir monitors on Instagram (to spot outliers):
+Indian passport travel, Bali/Chiang Mai nomad content, remote work reels, creator abroad
+
+ARTICLES (with sources, past 7 days):
 {article_text}
 
 RECENTLY COVERED by Mir (avoid repeating): {recent_str}
 
-For each intel item, include the source name and URL it came from.
+OUTLIER DETECTION: Flag topics where you see unusual spike or momentum vs. typical content — anything that appears to be getting 2x or more discussion than usual in this space right now.
+
+For each intel item, include the exact source name and URL it came from.
 
 Return ONLY valid JSON — no markdown, no explanation:
 {{
   "linkedin_intel": [
     {{
       "topic": "...",
-      "why_trending": "What is driving this conversation on LinkedIn right now",
-      "hook": "A first-line hook for a LinkedIn post about this — never starts with I",
+      "why_trending": "What is driving unusual engagement on LinkedIn for this right now",
+      "hook": "A first-line hook Mir could use — never starts with I, no em dashes",
+      "is_outlier": true,
       "source_name": "...",
       "source_url": "...",
-      "found_via": "Google News search for [term] past 7 days"
+      "found_via": "Google News — [search term] — past 7 days"
     }}
   ],
   "instagram_intel": [
     {{
       "topic": "...",
-      "why_trending": "What is trending on Instagram in this space right now",
-      "hook": "A visual hook for a reel about this",
+      "why_trending": "What is resonating visually on Instagram in this space",
+      "hook": "Visual hook for a reel — what the first frame shows",
+      "is_outlier": false,
       "source_name": "...",
       "source_url": "...",
-      "found_via": "Google News search for [term] past 7 days"
+      "found_via": "Google News — [search term] — past 7 days"
     }}
   ],
   "content_gaps": [
     {{
       "angle": "...",
-      "why": "Why nobody is writing this yet",
+      "why": "Why this is underserved — who is NOT writing this",
       "source_name": "...",
       "source_url": "..."
     }}
   ],
   "suggested_angles": [
-    {{"idea": "Specific post idea in Mir's voice", "platform": "linkedin or instagram", "source_url": "..."}}
+    {{"idea": "Specific post idea in Mir's voice — concrete, no platitudes", "platform": "linkedin or instagram", "source_url": "..."}}
   ]
 }}
 
-2-3 items per section. Only include items from the past 7 days. Hyper-specific to Mir's niche."""
+2-3 items per section. Only include items supported by the articles above. Hyper-specific to Mir's niche. No generic marketing advice."""
             }]
         )
 
@@ -1115,6 +1204,30 @@ _VOICE_PROFILE = {
         "Em dashes for dramatic pauses. "
         "Opening with I or In today's world. "
         "Motivational platitudes with no grounding in real experience."
+    ),
+    "monitored_linkedin_accounts": (
+        "These are creators Mir watches on LinkedIn to understand what content patterns are working. "
+        "Not to copy — to spot outliers and understand what's resonating in his domain.\n"
+        "Justin Welsh — solopreneur/creator economy, clean personal brand, high-converting newsletters\n"
+        "Matt Gray — building in public, content systems, audience compounding\n"
+        "Lara Acosta — personal brand building, creator economy, from 0 to audience\n"
+        "Richard van der Blom — LinkedIn algorithm research, what actually gets reach\n"
+        "Sam Szuchan — B2B influencer ROI, creator deal structures\n"
+        "Jasmin Alic — LinkedIn content patterns, copy that converts\n"
+        "Sahil Bloom — systems + storytelling, personal finance narratives\n"
+        "Katelyn Bourgoin — B2B buyer psychology, why people buy\n"
+        "Steph Smith — remote work, digital goods, contrarian tech takes"
+    ),
+    "monitored_instagram_accounts": (
+        "These are creators Mir watches on Instagram to understand what's resonating in slow travel and nomad content.\n"
+        "Not to copy — to understand visual hooks, trending formats, what the audience responds to.\n"
+        "Indian passport travel creators — visa hacks, affordable destinations, the struggle and joy\n"
+        "@tanay.p — tech + travel content, Indian founder abroad\n"
+        "@thewanderingquinn — slow travel philosophy, place immersion\n"
+        "@nomadnumbers — cost breakdowns, where to live and work\n"
+        "@becomingminimalist — living with less while seeing more\n"
+        "Remote work + SEA (Southeast Asia) content — Bali, Chiang Mai, Tbilisi reels\n"
+        "Indian passport + Schengen visa content — high search volume, high frustration, high community"
     ),
 }
 
