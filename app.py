@@ -599,20 +599,19 @@ def fetch_rss_fallback(queries_with_labels, platform_label):
 
 
 def fetch_reddit_intel(subreddits, platform_label):
-    """Fetch Reddit posts. Priority: Apify → PRAW OAuth → RSS fallback.
+    """Fetch Reddit posts. Priority: Reddit JSON API → PRAW OAuth → RSS fallback.
 
-    Apify uses residential proxies so it's never blocked from Railway.
-    PRAW uses the official OAuth API (oauth.reddit.com, also not blocked).
-    RSS is the last resort and may be rate-limited from datacenter IPs.
+    Reddit JSON API is free, requires no auth, and gives richer data than RSS.
+    PRAW uses the official OAuth API (needs REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET).
+    RSS is the last resort.
     """
-    # 1. Apify reddit scraper — best option, uses residential proxies
-    if os.environ.get('APIFY_TOKEN'):
-        posts = _fetch_reddit_apify(subreddits, platform_label)
-        if posts:
-            return posts
-        logger.warning("Apify Reddit returned 0 posts — trying next method")
+    # 1. Reddit native JSON API — free, no auth, works from Railway IPs
+    posts = _fetch_reddit_json(subreddits, platform_label)
+    if posts:
+        return posts
+    logger.warning("Reddit JSON API returned 0 posts — trying next method")
 
-    # 2. PRAW OAuth API — no proxy needed, official endpoint
+    # 2. PRAW OAuth API — needs REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET env vars
     client_id = os.environ.get('REDDIT_CLIENT_ID', '').strip()
     client_secret = os.environ.get('REDDIT_CLIENT_SECRET', '').strip()
     if client_id and client_secret:
@@ -625,54 +624,52 @@ def fetch_reddit_intel(subreddits, platform_label):
     return _fetch_reddit_rss(subreddits, platform_label)
 
 
-def _fetch_reddit_apify(subreddits, platform_label):
-    """Fetch Reddit top posts via Apify actor (residential proxies, no Reddit creds needed)."""
-    try:
-        from apify_client import ApifyClient
-        apify = ApifyClient(os.environ['APIFY_TOKEN'])
-        articles = []
-        for sub in subreddits:
-            try:
-                run = apify.actor("trudax/reddit-scraper").call(run_input={
-                    "searches": [{
-                        "type": "community",
-                        "community": sub,
-                        "sort": "top",
-                        "time": "week",
-                        "maxItems": 8,
-                    }],
-                    "maxItems": 8,
-                }, timeout_secs=90)
-                items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
-                for item in items:
-                    title = (item.get('title') or '').strip()
-                    if not title or title.lower().startswith(('[deleted]', '[removed]')):
-                        continue
-                    score = item.get('score') or item.get('upvotes') or 0
-                    num_comments = item.get('numComments') or item.get('commentsCount') or 0
-                    body = (item.get('text') or item.get('body') or '')[:200].strip()
-                    summary = body or f"{score:,} upvotes · {num_comments:,} comments"
-                    articles.append({
-                        'id': str(uuid.uuid4()),
-                        'source': f"Reddit r/{sub}",
-                        'title': title,
-                        'url': item.get('url') or item.get('link', ''),
-                        'summary': summary,
-                        'category': platform_label,
-                        'cached_at': datetime.datetime.now().isoformat(),
-                        'score': score,
-                        'comments': num_comments,
-                    })
-            except Exception as e:
-                logger.warning(f"Apify Reddit r/{sub} error: {e}")
-        logger.info(f"Apify Reddit {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
-        return articles
-    except ImportError:
-        logger.warning("apify-client not installed")
-        return []
-    except Exception as e:
-        logger.error(f"Apify Reddit init error: {e}")
-        return []
+def _fetch_reddit_json(subreddits, platform_label):
+    """Fetch Reddit top posts via Reddit's native JSON API (free, no auth required)."""
+    import requests as _req
+    headers = {
+        'User-Agent': 'MirStudio/2.0 intel-fetcher (personal project)',
+        'Accept': 'application/json',
+    }
+    articles = []
+    for sub in subreddits:
+        try:
+            url = f"https://www.reddit.com/r/{sub}/top.json?t=week&limit=8&raw_json=1"
+            resp = _req.get(url, headers=headers, timeout=12)
+            if resp.status_code == 429:
+                logger.warning(f"Reddit JSON r/{sub}: rate-limited (429)")
+                continue
+            if resp.status_code != 200:
+                logger.warning(f"Reddit JSON r/{sub}: HTTP {resp.status_code}")
+                continue
+            posts = resp.json().get('data', {}).get('children', [])
+            for post in posts:
+                p = post.get('data', {})
+                title = (p.get('title') or '').strip()
+                if not title or title.lower().startswith(('[deleted]', '[removed]')):
+                    continue
+                score = p.get('score') or 0
+                num_comments = p.get('num_comments') or 0
+                body = (p.get('selftext') or '').strip()
+                if body in ('[deleted]', '[removed]'):
+                    body = ''
+                summary = body[:200] if body else f"{score:,} upvotes · {num_comments:,} comments"
+                permalink = p.get('permalink', '')
+                articles.append({
+                    'id': str(uuid.uuid4()),
+                    'source': f"Reddit r/{sub}",
+                    'title': title,
+                    'url': f"https://www.reddit.com{permalink}" if permalink else p.get('url', ''),
+                    'summary': summary,
+                    'category': platform_label,
+                    'cached_at': datetime.datetime.now().isoformat(),
+                    'score': score,
+                    'comments': num_comments,
+                })
+        except Exception as e:
+            logger.warning(f"Reddit JSON r/{sub} error: {e}")
+    logger.info(f"Reddit JSON API {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
+    return articles
 
 
 def _fetch_reddit_praw(subreddits, platform_label, client_id, client_secret):
@@ -892,28 +889,20 @@ def fetch_and_cache_intel():
     articles.extend(ig_posts)
     logger.info(f"LinkedIn (Apify): {len(li_posts)} | Instagram ({ig_method}): {len(ig_posts)}")
 
-    # ── 3. Reddit: Apify → PRAW → RSS ────────────────────────────────────────
+    # ── 3. Reddit: JSON API → PRAW → RSS ─────────────────────────────────────
     li_reddit = fetch_reddit_intel(_LINKEDIN_SUBREDDITS, 'linkedin_posts')
     ig_reddit = fetch_reddit_intel(_INSTAGRAM_SUBREDDITS, 'instagram_posts')
     reddit_count = len(li_reddit) + len(ig_reddit)
-    # Detect which method was actually used for accurate log labels
-    _has_apify   = bool(os.environ.get('APIFY_TOKEN'))
-    _has_praw    = bool(os.environ.get('REDDIT_CLIENT_ID') and os.environ.get('REDDIT_CLIENT_SECRET'))
-    _reddit_type = 'reddit_apify' if _has_apify else ('reddit_praw' if _has_praw else 'reddit_rss')
-    _reddit_method_name = 'Apify' if _has_apify else ('PRAW OAuth' if _has_praw else 'RSS')
-    _reddit_err  = '' if reddit_count > 0 else (
-        '0 posts — Apify actor may need a moment, retry refresh' if _has_apify else
-        'Add APIFY_TOKEN or REDDIT credentials in Settings'
-    )
-    _log_intel_source(run_at, f'Reddit B2B/marketing ({_reddit_method_name})', _reddit_type,
+    _reddit_err = '' if reddit_count > 0 else 'Reddit returned 0 posts across all methods'
+    _log_intel_source(run_at, 'Reddit B2B/marketing (JSON API)', 'reddit_json',
                       len(li_reddit), success=len(li_reddit) > 0,
                       error=_reddit_err if len(li_reddit) == 0 else '')
-    _log_intel_source(run_at, f'Reddit travel/nomad ({_reddit_method_name})', _reddit_type,
+    _log_intel_source(run_at, 'Reddit travel/nomad (JSON API)', 'reddit_json',
                       len(ig_reddit), success=len(ig_reddit) > 0,
                       error=_reddit_err if len(ig_reddit) == 0 else '')
     articles.extend(li_reddit)
     articles.extend(ig_reddit)
-    logger.info(f"Reddit ({_reddit_method_name}): {reddit_count} total posts")
+    logger.info(f"Reddit (JSON API): {reddit_count} total posts")
 
     has_deep = bool(li_posts or ig_posts or li_reddit or ig_reddit)  # True when any real social data came in
 
