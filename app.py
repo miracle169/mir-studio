@@ -347,10 +347,12 @@ def fetch_linkedin_apify():
         all_items = []
         for keyword in _LINKEDIN_KEYWORDS:
             try:
-                run = apify.actor("curious_coder/linkedin-post-search-scraper").call(run_input={
-                    "queries": [keyword],
-                    "maxResults": 8,
-                    "datePosted": "past-week",
+                # apimaestro/linkedin-posts-search-scraper-no-cookies — no auth required, 4.5★
+                run = apify.actor("apimaestro/linkedin-posts-search-scraper-no-cookies").call(run_input={
+                    "keyword": keyword,
+                    "date_filter": "past-week",
+                    "sort_type": "date_posted",
+                    "total_posts": 8,
                 }, timeout_secs=90)
                 items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
                 for item in items:
@@ -363,25 +365,29 @@ def fetch_linkedin_apify():
             return [], True  # Apify was used but returned nothing
 
         def li_score(i):
-            return (i.get('totalReactionCount') or i.get('likeCount') or 0) + \
+            return (i.get('totalReactionCount') or i.get('reactionCount') or i.get('likeCount') or 0) + \
                    3 * (i.get('commentsCount') or i.get('commentCount') or 0) + \
-                   2 * (i.get('repostsCount') or i.get('shareCount') or 0)
+                   2 * (i.get('repostsCount') or i.get('reshareCount') or i.get('shareCount') or 0)
 
         scored, threshold = _outlier_score(all_items, li_score)
         articles = []
         for score, item in scored:
-            reactions = item.get('totalReactionCount') or item.get('likeCount') or 0
+            reactions = item.get('totalReactionCount') or item.get('reactionCount') or item.get('likeCount') or 0
             comments = item.get('commentsCount') or item.get('commentCount') or 0
-            reposts = item.get('repostsCount') or item.get('shareCount') or 0
-            author = item.get('authorName') or item.get('author', {}).get('name', 'LinkedIn user')
-            text = (item.get('text') or item.get('content') or '')[:300]
+            reposts = item.get('repostsCount') or item.get('reshareCount') or item.get('shareCount') or 0
+            # Handle nested author object or flat field
+            author_obj = item.get('author') or {}
+            author = (item.get('authorName') or
+                      author_obj.get('name') or author_obj.get('fullName') or
+                      item.get('actorName') or 'LinkedIn user')
+            text = (item.get('text') or item.get('commentary') or item.get('content') or '')[:300]
             keyword = item.get('_keyword', 'linkedin')
             is_outlier = score > threshold
             articles.append({
                 'id': str(uuid.uuid4()),
                 'source': f"LinkedIn — {keyword}{' ⚡OUTLIER' if is_outlier else ''}",
                 'title': text[:80] or f"Post by {author}",
-                'url': item.get('url') or item.get('postUrl', ''),
+                'url': item.get('url') or item.get('postUrl') or item.get('link', ''),
                 'summary': (
                     f"{'⚡ OUTLIER — ' if is_outlier else ''}"
                     f"Keyword: '{keyword}' | Eng score: {int(score)} | "
@@ -487,19 +493,18 @@ def _fetch_instagram_instaloader(hashtags):
 
 
 def _fetch_instagram_apify_raw(hashtags):
-    """Internal: Apify Instagram scraper (used as fallback). Returns (articles, used)."""
+    """Internal: Apify Instagram hashtag scraper (used as fallback). Returns (articles, used)."""
     token = os.environ.get('APIFY_TOKEN')
     if not token:
         return [], False
     try:
         from apify_client import ApifyClient
         apify = ApifyClient(token)
-        hashtag_urls = [f"https://www.instagram.com/explore/tags/{tag}/" for tag in hashtags]
-        run = apify.actor("apify/instagram-scraper").call(run_input={
-            "directUrls": hashtag_urls,
+        # Use dedicated hashtag scraper — more reliable than generic instagram-scraper
+        run = apify.actor("apify/instagram-hashtag-scraper").call(run_input={
+            "hashtags": hashtags,      # list of strings without #
             "resultsType": "posts",
             "resultsLimit": 10,
-            "onlyPostsNewerThan": "7 days",
         }, timeout_secs=120)
         items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
         if not items:
@@ -508,23 +513,23 @@ def _fetch_instagram_apify_raw(hashtags):
         def ig_score(i):
             return (i.get('likesCount') or 0) + \
                    3 * (i.get('commentsCount') or 0) + \
-                   0.1 * (i.get('videoViewCount') or 0)
+                   0.1 * (i.get('videoPlayCount') or i.get('videoViewCount') or 0)
 
         scored, threshold = _outlier_score(items, ig_score)
         articles = []
         for score, item in scored:
             likes = item.get('likesCount') or 0
             comments = item.get('commentsCount') or 0
-            views = item.get('videoViewCount') or 0
-            owner = item.get('ownerUsername', 'unknown')
+            views = item.get('videoPlayCount') or item.get('videoViewCount') or 0
+            owner = item.get('ownerUsername') or item.get('username', 'unknown')
             hashtags_used = ' '.join((item.get('hashtags') or [])[:5])
-            caption = (item.get('caption') or '')[:300]
+            caption = (item.get('caption') or item.get('text') or '')[:300]
             is_outlier = score > threshold
             articles.append({
                 'id': str(uuid.uuid4()),
                 'source': f"Instagram hashtag{' ⚡OUTLIER' if is_outlier else ''}",
                 'title': caption[:80] or f"Post by @{owner}",
-                'url': item.get('url', ''),
+                'url': item.get('url') or item.get('shortCode') and f"https://www.instagram.com/p/{item['shortCode']}/" or '',
                 'summary': (
                     f"{'⚡ OUTLIER — ' if is_outlier else ''}"
                     f"Eng score: {int(score)} | {likes} likes, {comments} comments, {views} views | "
