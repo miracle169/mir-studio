@@ -128,39 +128,53 @@ input, textarea, select { user-select: text; }
   margin-bottom: 20px;
 }
 
-/* Voice button */
+/* Voice button — iOS emoji style */
 .voice-row { display: flex; justify-content: center; margin-bottom: 16px; }
 
-.voice-btn {
+.voice-pill-wrap {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  width: 100px;
-  height: 100px;
-  border-radius: 50%;
-  border: none;
-  background: var(--txt1);
-  color: white;
-  cursor: pointer;
-  transition: all .2s cubic-bezier(.34,1.56,.64,1);
-  box-shadow: 0 4px 16px rgba(0,0,0,.25);
 }
 
-.voice-btn:active { transform: scale(.93); }
+.voice-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;          /* iOS squircle shape */
+  border: none;
+  background: var(--bg2);
+  cursor: pointer;
+  transition: transform .15s cubic-bezier(.34,1.56,.64,1),
+              background .15s ease,
+              box-shadow .15s ease;
+  box-shadow: 0 2px 8px rgba(0,0,0,.10), 0 1px 2px rgba(0,0,0,.08);
+}
+
+.voice-btn:hover {
+  background: var(--sep-light);
+  box-shadow: 0 4px 12px rgba(0,0,0,.14);
+}
+
+.voice-btn:active { transform: scale(.90); }
 
 .voice-btn.recording {
-  background: var(--red);
-  animation: pulse-record 1.2s ease-in-out infinite;
+  background: #FF3B30;
+  box-shadow: 0 0 0 0 rgba(255,59,48,.4);
+  animation: pulse-record 1.4s ease-in-out infinite;
 }
 
 @keyframes pulse-record {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255,59,48,.4); }
-  50% { box-shadow: 0 0 0 14px rgba(255,59,48,0); }
+  0%   { box-shadow: 0 0 0 0 rgba(255,59,48,.45); }
+  60%  { box-shadow: 0 0 0 12px rgba(255,59,48,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,59,48,0); }
 }
 
-.voice-icon { font-size: 28px; line-height: 1; }
-.voice-label { font-size: 11px; font-weight: 600; letter-spacing: .3px; opacity: .85; }
+.voice-icon { font-size: 26px; line-height: 1; user-select: none; }
+.voice-label { font-size: 11px; font-weight: 500; letter-spacing: .2px; color: var(--txt2); }
 
 /* Thought textarea */
 .input-group { position: relative; margin-bottom: 12px; }
@@ -652,6 +666,8 @@ input, textarea, select { user-select: text; }
 .card-btn:active { background: var(--sep-light); }
 .card-btn.green { background: #E8F5E9; color: #2E7D32; }
 .card-btn.green:active { background: #C8E6C9; }
+.card-btn.red { background: #FDECEA; color: #C62828; }
+.card-btn.red:active { background: #FFCDD2; }
 
 .rating-row {
   display: flex;

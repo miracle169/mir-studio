@@ -165,6 +165,7 @@ function setupVoiceCapture() {
     state.isRecording = true;
     state.recognition.start();
     btn.classList.add('recording');
+    document.getElementById('voice-icon').textContent = '⏹️';
     label.textContent = 'Tap to stop';
     xpFlash('⚡ Capturing');
   }
@@ -173,6 +174,7 @@ function setupVoiceCapture() {
     state.isRecording = false;
     state.recognition.stop();
     btn.classList.remove('recording');
+    document.getElementById('voice-icon').textContent = '🎙️';
     label.textContent = 'Tap to speak';
     if (textarea.value.trim()) scheduleRawIdeaSave('voice');
   }
@@ -368,6 +370,12 @@ async function generate() {
   spinner.style.display = 'block';
 
   try {
+    // Quick API key pre-check
+    const status = await GET('/api/status').catch(() => null);
+    if (status && !status.has_api_key) {
+      throw new Error('No API key set. Go to ⚙️ Settings and add your Anthropic API key.');
+    }
+
     const result = await POST('/api/generate', {
       thought,
       platforms: [...state.platforms],
@@ -376,14 +384,20 @@ async function generate() {
       image_description: state.imageDescription || '',
     });
 
-    // Check for errors in individual platforms
+    // Collect per-platform errors
     const errMessages = [];
     if (result.linkedin_error) errMessages.push(`LinkedIn: ${result.linkedin_error}`);
     if (result.newsletter_error) errMessages.push(`Newsletter: ${result.newsletter_error}`);
     if (result.instagram_error) errMessages.push(`Instagram: ${result.instagram_error}`);
 
-    if (errMessages.length === [...state.platforms].length) {
-      throw new Error(errMessages.join('. '));
+    // If ALL platforms errored, treat it as a full failure
+    if (errMessages.length > 0 && errMessages.length >= [...state.platforms].length) {
+      throw new Error(errMessages.join(' | '));
+    }
+
+    // Show partial errors as warnings (not fatal)
+    if (errMessages.length > 0) {
+      toast('⚠️ ' + errMessages.join(' | '), 5000);
     }
 
     state.currentItemId = result.item_id;
@@ -395,12 +409,17 @@ async function generate() {
 
     renderOutputSection();
     xpFlash('✨ Generated');
-
-    // Reload content sections
     loadContentSections();
 
   } catch (err) {
-    toast('❌ ' + err.message, 4000);
+    const msg = err.message || 'Unknown error';
+    // If it looks like an API key issue, nudge the user to Settings
+    if (msg.toLowerCase().includes('api key') || msg.toLowerCase().includes('authentication') || msg.toLowerCase().includes('401')) {
+      toast('❌ API key error — go to ⚙️ Settings to verify your key', 6000);
+    } else {
+      toast('❌ ' + msg, 5000);
+    }
+    console.error('Generate error:', msg);
   } finally {
     btn.disabled = false;
     btnText.style.display = 'block';
@@ -746,9 +765,8 @@ async function discardFromCard(itemId) {
   const reason = prompt('Why discard? (optional — helps improve future content)\n\nExamples: "too generic", "wrong tone", "sounds like AI"') ?? '';
   try {
     await POST(`/api/content/${itemId}/discard`, { reason, pattern_notes: reason });
-    // Remove the card from local state and re-render
     state.allContent = state.allContent.filter(i => i.id !== itemId);
-    renderContent();
+    await loadContentSections();
     toast('🗑 Discarded');
   } catch (e) {
     toast('Failed to discard — try again');
@@ -903,12 +921,19 @@ async function loadIntel() {
     // Suggested angles
     const anglesEl = document.getElementById('intel-angles');
     anglesEl.innerHTML = '';
-    data.suggested_angles.forEach(angle => {
+    (data.suggested_angles || []).forEach(angle => {
+      // angle can be a string or an object {idea, platform, source_url}
+      const idea = (typeof angle === 'object') ? (angle.idea || JSON.stringify(angle)) : angle;
+      const platform = (typeof angle === 'object' && angle.platform) ? ` · ${angle.platform}` : '';
+      const src = (typeof angle === 'object' && angle.source_url)
+        ? `<a href="${angle.source_url}" target="_blank" class="intel-source-link">🔗 Source</a>` : '';
       const card = document.createElement('div');
       card.className = 'intel-card';
       card.innerHTML = `
-        <div class="intel-card-title">${angle}</div>
-        <button class="intel-use-btn" data-text="${angle}">✏️ Write this</button>
+        <div class="intel-card-title">${idea}</div>
+        ${platform ? `<div class="intel-card-via">${platform}</div>` : ''}
+        ${src}
+        <button class="intel-use-btn" data-text="${idea.replace(/"/g, '&quot;')}">✏️ Write this</button>
       `;
       anglesEl.appendChild(card);
     });
