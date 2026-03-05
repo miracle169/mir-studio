@@ -353,6 +353,20 @@
       </div>
     </div>
 
+    <!-- Reddit API credentials -->
+    <div class="settings-card">
+      <div class="settings-card-title">💬 Reddit API (PRAW)</div>
+      <div class="settings-card-body">
+        <div id="reddit-key-status" class="api-status-indicator"></div>
+        <p class="settings-hint" style="margin-bottom:8px">Enables real Reddit data via the official OAuth API (not blocked by Railway). Get credentials at <strong>reddit.com/prefs/apps</strong> → create a <em>script</em> app.</p>
+        <input type="text" id="reddit-client-id-input" class="modal-input" placeholder="Client ID (under app name)" style="margin-bottom:8px" />
+        <div class="api-key-input-row">
+          <input type="password" id="reddit-client-secret-input" class="modal-input" placeholder="Client Secret" />
+          <button class="btn-primary-sm" id="save-reddit-btn">Save</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Model selector -->
     <div class="settings-card">
       <div class="settings-card-title">🤖 Claude Model</div>

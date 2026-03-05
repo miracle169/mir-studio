@@ -1257,6 +1257,18 @@ async function loadSettings() {
     document.getElementById('info-ideas').textContent = status.raw_ideas_count || 0;
     const total = (status.total_linkedin || 0) + (status.total_newsletter || 0) + (status.total_instagram || 0);
     document.getElementById('info-posts').textContent = total;
+
+    // Reddit credential status indicator
+    const redditStatus = document.getElementById('reddit-key-status');
+    if (redditStatus) {
+      if (status.has_reddit) {
+        redditStatus.className = 'api-status-indicator ok';
+        redditStatus.textContent = '✅ Reddit PRAW connected';
+      } else {
+        redditStatus.className = 'api-status-indicator missing';
+        redditStatus.textContent = '⚠️ No Reddit credentials — using RSS fallback';
+      }
+    }
   } catch {}
 
   // Load discard log
@@ -1291,6 +1303,24 @@ function setupSettings() {
       toast('✅ API key saved!');
       document.getElementById('api-key-input').value = '';
       document.getElementById('setup-banner').style.display = 'none';
+      loadSettings();
+    } catch (err) {
+      toast('❌ ' + err.message);
+    }
+  });
+
+  document.getElementById('save-reddit-btn').addEventListener('click', async () => {
+    const clientId = document.getElementById('reddit-client-id-input').value.trim();
+    const clientSecret = document.getElementById('reddit-client-secret-input').value.trim();
+    if (!clientId || !clientSecret) {
+      toast('Enter both Client ID and Client Secret');
+      return;
+    }
+    try {
+      await POST('/api/settings/reddit', { client_id: clientId, client_secret: clientSecret });
+      toast('✅ Reddit credentials saved! Refresh Intel to use PRAW.');
+      document.getElementById('reddit-client-id-input').value = '';
+      document.getElementById('reddit-client-secret-input').value = '';
       loadSettings();
     } catch (err) {
       toast('❌ ' + err.message);

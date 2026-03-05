@@ -503,13 +503,83 @@ def fetch_rss_fallback(queries_with_labels, platform_label):
 
 
 def fetch_reddit_intel(subreddits, platform_label):
-    """Fetch top posts from Reddit via RSS feeds (avoids datacenter IP blocks on JSON API)."""
+    """Fetch top posts from Reddit.
+
+    Tries PRAW (official OAuth API) first — uses oauth.reddit.com which works from
+    Railway datacenters.  Falls back to RSS if credentials are not set.
+    """
+    import time as _t
+    client_id = os.environ.get('REDDIT_CLIENT_ID', '').strip()
+    client_secret = os.environ.get('REDDIT_CLIENT_SECRET', '').strip()
+
+    if client_id and client_secret:
+        return _fetch_reddit_praw(subreddits, platform_label, client_id, client_secret)
+    else:
+        logger.warning("REDDIT_CLIENT_ID/SECRET not set — falling back to RSS")
+        return _fetch_reddit_rss(subreddits, platform_label)
+
+
+def _fetch_reddit_praw(subreddits, platform_label, client_id, client_secret):
+    """Fetch Reddit posts using PRAW (Official OAuth2 API — not blocked by Railway)."""
+    import time as _t
+    try:
+        import praw
+        import praw.exceptions
+    except ImportError:
+        logger.warning("praw not installed — falling back to RSS")
+        return _fetch_reddit_rss(subreddits, platform_label)
+
+    articles = []
+    cutoff_ts = _t.time() - (7 * 24 * 3600)
+    try:
+        reddit = praw.Reddit(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent="MirStudio/2.0 intel-fetcher (by /u/mir_studio_app)",
+            read_only=True,
+        )
+        for sub in subreddits:
+            try:
+                subreddit = reddit.subreddit(sub)
+                for post in subreddit.top(time_filter='week', limit=8):
+                    if post.created_utc < cutoff_ts:
+                        continue
+                    if post.stickied or not post.title:
+                        continue
+                    title = post.title.strip()
+                    if title.lower().startswith('[deleted]') or title.lower().startswith('[removed]'):
+                        continue
+                    # Build a rich summary with engagement data
+                    engagement = f"{post.score:,} upvotes · {post.num_comments:,} comments"
+                    body_snippet = (post.selftext[:200].strip() if post.selftext else '') or engagement
+                    articles.append({
+                        'id': str(uuid.uuid4()),
+                        'source': f"Reddit r/{sub}",
+                        'title': title,
+                        'url': f"https://reddit.com{post.permalink}",
+                        'summary': body_snippet,
+                        'category': platform_label,
+                        'cached_at': datetime.datetime.now().isoformat(),
+                        'score': post.score,
+                        'comments': post.num_comments,
+                    })
+            except Exception as e:
+                logger.warning(f"PRAW r/{sub} error: {e}")
+    except Exception as e:
+        logger.error(f"PRAW init error: {e} — falling back to RSS")
+        return _fetch_reddit_rss(subreddits, platform_label)
+
+    logger.info(f"PRAW Reddit {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
+    return articles
+
+
+def _fetch_reddit_rss(subreddits, platform_label):
+    """Fallback: Fetch Reddit posts via RSS (may be blocked from Railway datacenter)."""
     import time as _t
     cutoff_ts = _t.time() - (7 * 24 * 3600)
     articles = []
     for sub in subreddits:
         try:
-            # Use RSS instead of JSON API — less likely to be blocked from datacenter
             rss_url = f"https://www.reddit.com/r/{sub}/top.rss?t=week&limit=8"
             feed = feedparser.parse(rss_url, request_headers={
                 "User-Agent": "MirStudio/2.0 (+https://mir.up.railway.app)"
@@ -517,12 +587,10 @@ def fetch_reddit_intel(subreddits, platform_label):
             if feed.bozo and not feed.entries:
                 logger.warning(f"Reddit RSS r/{sub}: parse error or blocked")
                 continue
-            added = 0
             for entry in feed.entries[:8]:
                 pub = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
-                if pub:
-                    if _t.mktime(pub) < cutoff_ts:
-                        continue
+                if pub and _t.mktime(pub) < cutoff_ts:
+                    continue
                 title = getattr(entry, 'title', '').strip()
                 if not title or title.lower().startswith('[deleted]'):
                     continue
@@ -536,7 +604,6 @@ def fetch_reddit_intel(subreddits, platform_label):
                     'category': platform_label,
                     'cached_at': datetime.datetime.now().isoformat(),
                 })
-                added += 1
         except Exception as e:
             logger.warning(f"Reddit RSS r/{sub} error: {e}")
     logger.info(f"Reddit RSS {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
@@ -664,19 +731,24 @@ def fetch_and_cache_intel():
     articles.extend(ig_posts)
     logger.info(f"Apify: {len(li_posts)} LinkedIn + {len(ig_posts)} Instagram posts")
 
-    # ── 3. Reddit RSS — community discussion data ─────────────────────────────
+    # ── 3. Reddit — community discussion data (PRAW OAuth or RSS fallback) ────────
+    _has_reddit_creds = bool(os.environ.get('REDDIT_CLIENT_ID') and os.environ.get('REDDIT_CLIENT_SECRET'))
+    _reddit_source_type = 'reddit_praw' if _has_reddit_creds else 'reddit_rss'
+    _reddit_no_creds_err = '' if _has_reddit_creds else 'Add REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET in Settings to enable PRAW'
     li_reddit = fetch_reddit_intel(_LINKEDIN_SUBREDDITS, 'linkedin_posts')
     ig_reddit = fetch_reddit_intel(_INSTAGRAM_SUBREDDITS, 'instagram_posts')
     reddit_count = len(li_reddit) + len(ig_reddit)
-    _log_intel_source(run_at, 'Reddit (B2B/marketing subreddits)', 'reddit_rss',
+    _log_intel_source(run_at, 'Reddit (B2B/marketing subreddits)', _reddit_source_type,
                       len(li_reddit), success=len(li_reddit) > 0,
-                      error='0 posts — likely blocked from datacenter IP' if len(li_reddit) == 0 else '')
-    _log_intel_source(run_at, 'Reddit (travel/nomad subreddits)', 'reddit_rss',
+                      error=_reddit_no_creds_err if not _has_reddit_creds and len(li_reddit) == 0 else
+                            '0 posts returned' if len(li_reddit) == 0 else '')
+    _log_intel_source(run_at, 'Reddit (travel/nomad subreddits)', _reddit_source_type,
                       len(ig_reddit), success=len(ig_reddit) > 0,
-                      error='0 posts — likely blocked from datacenter IP' if len(ig_reddit) == 0 else '')
+                      error=_reddit_no_creds_err if not _has_reddit_creds and len(ig_reddit) == 0 else
+                            '0 posts returned' if len(ig_reddit) == 0 else '')
     articles.extend(li_reddit)
     articles.extend(ig_reddit)
-    logger.info(f"Reddit RSS: {reddit_count} total posts")
+    logger.info(f"Reddit ({'PRAW' if _has_reddit_creds else 'RSS'}): {reddit_count} total posts")
 
     has_deep = bool(li_posts or ig_posts)  # True only when Apify returned real engagement data
 
@@ -905,6 +977,8 @@ def status():
         raw_ideas_count = conn.execute("SELECT COUNT(*) as c FROM kb_raw_ideas").fetchone()['c']
     return jsonify({
         'has_api_key': has_key,
+        'has_reddit': bool(os.environ.get('REDDIT_CLIENT_ID') and os.environ.get('REDDIT_CLIENT_SECRET')),
+        'has_apify': bool(os.environ.get('APIFY_TOKEN')),
         'kb_ready': kb_count > 0,
         'stories_count': stories_count,
         'raw_ideas_count': raw_ideas_count,
@@ -931,6 +1005,32 @@ def set_api_key():
         env_content += f'\nANTHROPIC_API_KEY={key}\n'
     env_path.write_text(env_content)
     os.environ['ANTHROPIC_API_KEY'] = key
+    return jsonify({'ok': True})
+
+
+@app.route('/api/settings/reddit', methods=['POST'])
+def set_reddit_creds():
+    """Save Reddit API credentials (client_id + client_secret) to .env and runtime."""
+    data = request.json or {}
+    client_id = data.get('client_id', '').strip()
+    client_secret = data.get('client_secret', '').strip()
+    if not client_id or not client_secret:
+        return jsonify({'error': 'Both client_id and client_secret are required'}), 400
+
+    env_path = Path('.env')
+    env_content = env_path.read_text() if env_path.exists() else ''
+
+    def _upsert(content, key, value):
+        if f'{key}=' in content:
+            return re.sub(rf'{key}=.*', f'{key}={value}', content)
+        return content + f'\n{key}={value}\n'
+
+    env_content = _upsert(env_content, 'REDDIT_CLIENT_ID', client_id)
+    env_content = _upsert(env_content, 'REDDIT_CLIENT_SECRET', client_secret)
+    env_path.write_text(env_content)
+    os.environ['REDDIT_CLIENT_ID'] = client_id
+    os.environ['REDDIT_CLIENT_SECRET'] = client_secret
+    logger.info("Reddit credentials saved")
     return jsonify({'ok': True})
 
 
