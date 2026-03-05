@@ -773,6 +773,69 @@ input, textarea, select { user-select: text; }
   margin-top: 2px;
 }
 
+/* Tracked Creators */
+.intel-creators-hint {
+  font-size: 12px;
+  color: var(--txt3);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+.creator-add-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.creator-add-row input {
+  flex: 1;
+  min-width: 160px;
+  height: 38px;
+  padding: 0 12px;
+  background: var(--surface2);
+  border: 1.5px solid var(--sep-light);
+  border-radius: var(--radius-md);
+  color: var(--txt1);
+  font-size: 13px;
+}
+
+.creator-add-row input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.creator-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--surface2);
+  border-radius: var(--radius-md);
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.creator-chip a { color: var(--blue); text-decoration: none; }
+.creator-chip a:hover { text-decoration: underline; }
+
+.creator-niche {
+  font-size: 11px;
+  color: var(--txt3);
+  margin-left: 6px;
+}
+
+.creator-remove {
+  background: none;
+  border: none;
+  color: var(--txt3);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.creator-remove:hover { background: rgba(255,59,48,.1); color: #ff3b30; }
+
 .intel-use-btn {
   display: inline-block;
   margin-top: 8px;

@@ -72,7 +72,7 @@ function switchTab(tabName) {
   document.querySelector(`.nav-btn[data-tab="${tabName}"]`).classList.add('active');
 
   if (tabName === 'create')   loadContentSections();
-  if (tabName === 'intel')    loadIntel();
+  if (tabName === 'intel')    { loadIntel(); loadCreators(); }
   if (tabName === 'library')  { loadStories(); loadRawIdeas(); }
   if (tabName === 'queue')    loadQueue();
   if (tabName === 'settings') loadSettings();
@@ -1261,6 +1261,7 @@ async function init() {
   setupQueueFilters();
   setupSettings();
   setupIntelRefresh();
+  setupCreatorAdd();
 
   // Generate button
   document.getElementById('generate-btn').addEventListener('click', generate);
@@ -1287,3 +1288,54 @@ async function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// ── Tracked Creators ────────────────────────────────────────────────────────
+async function loadCreators() {
+  const list = document.getElementById('creators-list');
+  if (!list) return;
+  const creators = await GET('/api/creators').catch(() => []);
+  list.innerHTML = '';
+  if (!creators.length) {
+    list.innerHTML = '<div class="intel-card-sub" style="opacity:.5;margin-top:8px">No creators tracked yet.</div>';
+    return;
+  }
+  creators.forEach(c => {
+    const icon = c.platform === 'instagram' ? '📸' : '💼';
+    const row = document.createElement('div');
+    row.className = 'creator-chip';
+    row.innerHTML = `
+      <span>${icon} <a href="${c.profile_url}" target="_blank">@${c.handle}</a>${c.niche ? ` <span class="creator-niche">${c.niche}</span>` : ''}</span>
+      <button class="creator-remove" data-id="${c.id}" title="Remove">✕</button>
+    `;
+    row.querySelector('.creator-remove').addEventListener('click', async () => {
+      await fetch(`/api/creators/${c.id}`, { method: 'DELETE' });
+      loadCreators();
+      toast('Creator removed');
+    });
+    list.appendChild(row);
+  });
+}
+
+function setupCreatorAdd() {
+  const btn = document.getElementById('creator-add-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const urlInput = document.getElementById('creator-url-input');
+    const nicheInput = document.getElementById('creator-niche-input');
+    const url = urlInput.value.trim();
+    if (!url) return;
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    const result = await POST('/api/creators', { url, niche: nicheInput.value.trim() }).catch(e => ({ error: e.message }));
+    btn.disabled = false;
+    btn.textContent = 'Add';
+    if (result.error) {
+      toast('⚠️ ' + result.error);
+    } else {
+      urlInput.value = '';
+      nicheInput.value = '';
+      toast(`✅ @${result.handle} added to ${result.platform} tracking`);
+      loadCreators();
+    }
+  });
+}

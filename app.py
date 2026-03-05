@@ -138,6 +138,16 @@ def init_db():
                 performance_tier TEXT,
                 collected_at TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS tracked_creators (
+                id TEXT PRIMARY KEY,
+                platform TEXT NOT NULL,
+                handle TEXT NOT NULL,
+                profile_url TEXT,
+                niche TEXT,
+                added_at TEXT,
+                UNIQUE(platform, handle)
+            );
         """)
 
         # Initialize app_stats row if missing
@@ -267,14 +277,26 @@ RSS_SOURCES = [
 ]
 
 
+def get_tracked_handles(platform):
+    """Return list of handles from tracked_creators table for a given platform."""
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT handle FROM tracked_creators WHERE platform = ?", (platform,)
+            ).fetchall()
+        return [r['handle'] for r in rows]
+    except Exception:
+        return []
+
+
 def fetch_instagram_apify():
     """Optional: use Apify Instagram Scraper for real reels data from tracked accounts.
     Returns list of article-like dicts. Falls back silently if APIFY_TOKEN not set."""
     token = os.environ.get('APIFY_TOKEN')
     if not token:
         return []
-    # Tracked Instagram usernames (Mir's monitored accounts)
-    INSTAGRAM_HANDLES = [
+    # Use DB-tracked accounts; fall back to defaults if none added yet
+    INSTAGRAM_HANDLES = get_tracked_handles('instagram') or [
         "tanay.p", "nomadnumbers", "thewanderingquinn",
         "passportbros_india", "workfromwherever",
     ]
@@ -395,6 +417,12 @@ def fetch_and_cache_intel():
             ).fetchall()
         recent_str = ', '.join([r['topic'] for r in recent_rows]) if recent_rows else 'none'
 
+        # Pull user-tracked creators from DB
+        tracked_li = get_tracked_handles('linkedin')
+        tracked_ig = get_tracked_handles('instagram')
+        li_str = ', '.join(tracked_li) if tracked_li else 'Justin Welsh, Matt Gray, Lara Acosta, Richard van der Blom, Sam Szuchan, Jasmin Alic, Steph Smith'
+        ig_str = ', '.join([f'@{h}' for h in tracked_ig]) if tracked_ig else 'Indian passport travel creators, SEA nomad creators, @nomadnumbers, @thewanderingquinn'
+
         response = client.messages.create(
             model=os.environ.get('CLAUDE_MODEL', 'claude-sonnet-4-5-20250929'),
             max_tokens=1800,
@@ -406,11 +434,11 @@ Mir's domains:
 - LinkedIn: B2B creator marketing, community building, influencer ROI, creator economy mechanics
 - Instagram: Slow travel on Indian passport, digital nomad logistics, remote work, SEA travel
 
-Creators Mir monitors on LinkedIn (to spot what's getting unusual engagement):
-Justin Welsh, Matt Gray, Lara Acosta, Richard van der Blom, Sam Szuchan, Jasmin Alic, Steph Smith
+Creators Mir monitors on LinkedIn (spot what's getting unusual engagement from these people/their space):
+{li_str}
 
-Creators/topics Mir monitors on Instagram (to spot outliers):
-Indian passport travel, Bali/Chiang Mai nomad content, remote work reels, creator abroad
+Creators Mir monitors on Instagram (spot outliers in their content space):
+{ig_str}
 
 ARTICLES (with sources, past 7 days):
 {article_text}
@@ -917,6 +945,64 @@ def discard_content(item_id):
                 )
             )
         conn.execute("UPDATE content_items SET status = 'discarded' WHERE id = ?", (item_id,))
+        conn.commit()
+    return jsonify({'ok': True})
+
+
+# ── Tracked Creators ──────────────────────────────────────────────────────────
+def _parse_creator_url(url):
+    """Extract platform + handle from a LinkedIn or Instagram profile URL."""
+    url = url.strip().rstrip('/')
+    # Instagram
+    m = re.match(r'(?:https?://)?(?:www\.)?instagram\.com/([^/?#]+)', url)
+    if m:
+        return 'instagram', m.group(1)
+    # LinkedIn
+    m = re.match(r'(?:https?://)?(?:www\.)?linkedin\.com/in/([^/?#]+)', url)
+    if m:
+        return 'linkedin', m.group(1)
+    # LinkedIn company
+    m = re.match(r'(?:https?://)?(?:www\.)?linkedin\.com/company/([^/?#]+)', url)
+    if m:
+        return 'linkedin', m.group(1)
+    # Raw @handle or bare username — require explicit platform
+    return None, None
+
+
+@app.route('/api/creators', methods=['GET'])
+def get_creators():
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM tracked_creators ORDER BY platform, added_at DESC"
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/creators', methods=['POST'])
+def add_creator():
+    data = request.json or {}
+    url = data.get('url', '').strip()
+    niche = data.get('niche', '').strip()
+    platform, handle = _parse_creator_url(url)
+    if not platform:
+        return jsonify({'error': 'Could not parse URL. Paste a linkedin.com/in/... or instagram.com/... URL.'}), 400
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO tracked_creators (id, platform, handle, profile_url, niche, added_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), platform, handle, url, niche, datetime.datetime.now().isoformat())
+            )
+            conn.commit()
+        return jsonify({'ok': True, 'platform': platform, 'handle': handle})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/creators/<creator_id>', methods=['DELETE'])
+def delete_creator(creator_id):
+    with get_db() as conn:
+        conn.execute("DELETE FROM tracked_creators WHERE id = ?", (creator_id,))
         conn.commit()
     return jsonify({'ok': True})
 
