@@ -1030,18 +1030,25 @@ async function loadIntelSources() {
     if (runAt) list.insertAdjacentHTML('afterbegin', `<div class="source-run-time">Last run: ${runAt}</div>`);
 
     panel.style.display = 'block';
-
-    document.getElementById('intel-sources-toggle').addEventListener('click', () => {
-      const body = document.getElementById('intel-sources-body');
-      const arrow = document.getElementById('intel-sources-arrow');
-      const open = body.style.display !== 'none';
-      body.style.display = open ? 'none' : 'block';
-      arrow.textContent = open ? '▼' : '▲';
-    });
   } catch (e) {
     // silently fail
   }
 }
+
+// Wire up sources panel toggle once at startup (not inside loadIntelSources to avoid duplicate listeners)
+document.addEventListener('DOMContentLoaded', () => {
+  const toggleBtn = document.getElementById('intel-sources-toggle');
+  if (toggleBtn) {
+    toggleBtn.addEventListener('click', () => {
+      const body = document.getElementById('intel-sources-body');
+      const arrow = document.getElementById('intel-sources-arrow');
+      if (!body) return;
+      const isOpen = body.style.display === 'block';
+      body.style.display = isOpen ? 'none' : 'block';
+      arrow.textContent = isOpen ? '▼' : '▲';
+    });
+  }
+});
 
 function renderIntelCards(containerId, items, templateFn) {
   const el = document.getElementById(containerId);
