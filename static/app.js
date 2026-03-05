@@ -830,6 +830,20 @@ async function loadIntel() {
         'Updated ' + d.toLocaleDateString('en', { month: 'short', day: 'numeric' }) + ' at ' +
         d.toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
     }
+    const badge = document.getElementById('intel-data-badge');
+    if (badge) {
+      if (data.deep_data) {
+        badge.textContent = '⚡ Deep data';
+        badge.className = 'intel-data-badge intel-data-badge--deep';
+        badge.style.display = 'inline-block';
+        badge.title = 'Real post engagement data from Apify (likes, comments, saves, views, outlier detection)';
+      } else {
+        badge.textContent = '📰 News only';
+        badge.className = 'intel-data-badge intel-data-badge--surface';
+        badge.style.display = 'inline-block';
+        badge.title = 'Surface-level Google News RSS. Add APIFY_TOKEN in Railway for real engagement data.';
+      }
+    }
 
     // LinkedIn Intel
     renderIntelCards('intel-linkedin', data.linkedin_intel||data.debates||[], item => {

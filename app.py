@@ -289,101 +289,195 @@ def get_tracked_handles(platform):
         return []
 
 
+def _outlier_score(items, score_fn):
+    """Detect outliers: items scoring above mean + 2*stdev. Returns (scored_items, threshold)."""
+    import statistics
+    scored = [(score_fn(i), i) for i in items]
+    vals = [s for s, _ in scored]
+    if not vals:
+        return scored, 0
+    mean_s = statistics.mean(vals)
+    stdev_s = statistics.stdev(vals) if len(vals) > 1 else 0
+    return scored, mean_s + (2.0 * stdev_s)
+
+
 def fetch_instagram_apify():
-    """Optional: use Apify Instagram Scraper for real reels data from tracked accounts.
-    Returns list of article-like dicts. Falls back silently if APIFY_TOKEN not set."""
+    """Deep Instagram research via Apify — real reels with engagement data + outlier detection.
+    Fetches last 30 days from tracked accounts, scores by likes+3*comments+0.1*views,
+    flags outliers (mean + 2*stdev), returns enriched article-like dicts."""
     token = os.environ.get('APIFY_TOKEN')
     if not token:
         return []
-    # Use DB-tracked accounts; fall back to defaults if none added yet
-    INSTAGRAM_HANDLES = get_tracked_handles('instagram') or [
-        "tanay.p", "nomadnumbers", "thewanderingquinn",
-        "passportbros_india", "workfromwherever",
+    handles = get_tracked_handles('instagram') or [
+        "tanay.p", "nomadnumbers", "thewanderingquinn", "passportbros_india", "workfromwherever",
     ]
     try:
         from apify_client import ApifyClient
-        client = ApifyClient(token)
-        run_input = {
-            "directUrls": [f"https://www.instagram.com/{h}/" for h in INSTAGRAM_HANDLES],
+        apify = ApifyClient(token)
+        run = apify.actor("apify/instagram-scraper").call(run_input={
+            "directUrls": [f"https://www.instagram.com/{h}/" for h in handles],
             "resultsType": "posts",
-            "resultsLimit": 6,  # 6 per account
-            "searchType": "hashtag",
-            "addParentData": False,
-        }
-        run = client.actor("apify/instagram-scraper").call(run_input=run_input, timeout_secs=90)
-        items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
-
-        # Compute engagement score: likes + 3*comments + 0.1*videoViewCount
-        scored = []
-        for item in items:
-            likes = item.get('likesCount', 0) or 0
-            comments = item.get('commentsCount', 0) or 0
-            views = item.get('videoViewCount', 0) or 0
-            score = likes + (3 * comments) + (0.1 * views)
-            scored.append((score, item))
-        if not scored:
+            "resultsLimit": 12,  # More posts per account for better outlier stats
+            "onlyPostsNewerThan": "30 days",
+        }, timeout_secs=120)
+        items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
+        if not items:
             return []
 
-        # Outlier detection: engagement > mean + 2*std
-        import statistics
-        scores = [s for s, _ in scored]
-        mean_s = statistics.mean(scores) if scores else 0
-        stdev_s = statistics.stdev(scores) if len(scores) > 1 else 0
-        threshold = mean_s + (2.0 * stdev_s)
+        def ig_score(i):
+            return (i.get('likesCount') or 0) + \
+                   3 * (i.get('commentsCount') or 0) + \
+                   0.1 * (i.get('videoViewCount') or 0)
 
+        scored, threshold = _outlier_score(items, ig_score)
         articles = []
         for score, item in scored:
-            caption = (item.get('caption') or '')[:200]
+            likes = item.get('likesCount') or 0
+            comments = item.get('commentsCount') or 0
+            views = item.get('videoViewCount') or 0
+            saves = item.get('savesCount') or 0
             owner = item.get('ownerUsername', 'unknown')
+            followers = item.get('ownerFollowersCount') or 1
+            eng_rate = round((score / followers) * 100, 2) if followers else 0
             is_outlier = score > threshold
+            caption = (item.get('caption') or '')[:300]
             articles.append({
                 'id': str(uuid.uuid4()),
-                'source': f"Instagram @{owner} {'⚡ OUTLIER' if is_outlier else ''}",
-                'title': caption[:80] or f"Reel by @{owner}",
+                'source': f"Instagram @{owner}{' ⚡OUTLIER' if is_outlier else ''}",
+                'title': caption[:80] or f"Post by @{owner}",
                 'url': item.get('url', ''),
-                'summary': f"Engagement: {int(score)} ({int(likes)} likes, {int(comments)} comments). {caption[:120]}",
+                'summary': (
+                    f"{'⚡ OUTLIER — ' if is_outlier else ''}"
+                    f"Eng score: {int(score)} | {likes} likes, {comments} comments, "
+                    f"{views} views, {saves} saves | Eng rate: {eng_rate}% | "
+                    f"Caption: {caption[:180]}"
+                ),
                 'category': 'instagram_accounts',
                 'cached_at': datetime.datetime.now().isoformat(),
             })
-        logger.info(f"Apify Instagram: {len(articles)} posts fetched, "
-                    f"{sum(1 for s,_ in scored if s > threshold)} outliers")
+        outlier_count = sum(1 for s, _ in scored if s > threshold)
+        logger.info(f"Apify Instagram: {len(articles)} posts, {outlier_count} outliers (threshold={int(threshold)})")
         return articles
     except ImportError:
-        logger.warning("apify-client not installed; skipping Instagram scraper")
+        logger.warning("apify-client not installed; skipping Instagram deep research")
         return []
     except Exception as e:
         logger.error(f"Apify Instagram error: {e}")
         return []
 
 
+def fetch_linkedin_apify():
+    """Deep LinkedIn research via Apify — real posts with reactions/comments + outlier detection.
+    Fetches recent posts from tracked LinkedIn handles, scores by weighted engagement,
+    flags outliers (mean + 2*stdev), returns enriched article-like dicts."""
+    token = os.environ.get('APIFY_TOKEN')
+    if not token:
+        return []
+    handles = get_tracked_handles('linkedin') or [
+        "justinwelsh", "mattgray", "laraacosta", "jasmin-alic",
+    ]
+    try:
+        from apify_client import ApifyClient
+        apify = ApifyClient(token)
+        # Apify LinkedIn Posts Scraper
+        run = apify.actor("curious_coder/linkedin-post-search-scraper").call(run_input={
+            "profileUrls": [f"https://www.linkedin.com/in/{h}/" for h in handles],
+            "maxPosts": 20,
+        }, timeout_secs=120)
+        items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
+        if not items:
+            return []
+
+        def li_score(i):
+            # Weighted: reactions(1x) + comments(3x) + reposts(2x) + shares(2x)
+            return (i.get('totalReactionCount') or i.get('likeCount') or 0) + \
+                   3 * (i.get('commentsCount') or i.get('commentCount') or 0) + \
+                   2 * (i.get('repostsCount') or i.get('shareCount') or 0)
+
+        scored, threshold = _outlier_score(items, li_score)
+        articles = []
+        for score, item in scored:
+            reactions = item.get('totalReactionCount') or item.get('likeCount') or 0
+            comments = item.get('commentsCount') or item.get('commentCount') or 0
+            reposts = item.get('repostsCount') or item.get('shareCount') or 0
+            author = item.get('authorName') or item.get('author', {}).get('name', 'unknown')
+            text = (item.get('text') or item.get('content') or '')[:300]
+            is_outlier = score > threshold
+            articles.append({
+                'id': str(uuid.uuid4()),
+                'source': f"LinkedIn {author}{' ⚡OUTLIER' if is_outlier else ''}",
+                'title': text[:80] or f"Post by {author}",
+                'url': item.get('url') or item.get('postUrl', ''),
+                'summary': (
+                    f"{'⚡ OUTLIER — ' if is_outlier else ''}"
+                    f"Eng score: {int(score)} | {reactions} reactions, "
+                    f"{comments} comments, {reposts} reposts | "
+                    f"Post: {text[:200]}"
+                ),
+                'category': 'linkedin_accounts',
+                'cached_at': datetime.datetime.now().isoformat(),
+            })
+        outlier_count = sum(1 for s, _ in scored if s > threshold)
+        logger.info(f"Apify LinkedIn: {len(articles)} posts, {outlier_count} outliers (threshold={int(threshold)})")
+        return articles
+    except ImportError:
+        logger.warning("apify-client not installed; skipping LinkedIn deep research")
+        return []
+    except Exception as e:
+        logger.error(f"Apify LinkedIn error: {e}")
+        return []
+
+
 def fetch_and_cache_intel():
     """Pull RSS feeds (+ optional Apify) → cache → Claude analysis → store in DB."""
+    import time as _time
     logger.info("Intel pipeline running...")
     api_key = os.environ.get('ANTHROPIC_API_KEY')
+
+    # Hard cutoff: only articles published in the past 7 days
+    cutoff_ts = _time.time() - (7 * 24 * 3600)
 
     articles = []
     for name, url, category in RSS_SOURCES:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:3]:
+            added = 0
+            for entry in feed.entries[:8]:  # Check up to 8, keep only fresh ones
+                # Date filter — drop anything older than 7 days
+                pub = getattr(entry, 'published_parsed', None) or getattr(entry, 'updated_parsed', None)
+                if pub:
+                    entry_ts = _time.mktime(pub)
+                    if entry_ts < cutoff_ts:
+                        continue  # Skip stale article
+                title = getattr(entry, 'title', '').strip()
+                if not title:
+                    continue
                 summary = re.sub('<[^<]+?>', '', getattr(entry, 'summary', ''))[:280]
                 articles.append({
                     'id': str(uuid.uuid4()),
                     'source': name,
-                    'title': getattr(entry, 'title', ''),
+                    'title': title,
                     'url': getattr(entry, 'link', ''),
                     'summary': summary,
                     'category': category,
                     'cached_at': datetime.datetime.now().isoformat(),
                 })
+                added += 1
+                if added >= 3:
+                    break
+            if added == 0:
+                logger.warning(f"RSS '{name}': no fresh articles in past 7 days")
         except Exception as e:
             logger.error(f"RSS error {name}: {e}")
 
-    # Augment with real Instagram data if Apify token is configured
-    apify_posts = fetch_instagram_apify()
-    if apify_posts:
-        articles.extend(apify_posts)
-        logger.info(f"Total intel articles after Apify: {len(articles)}")
+    # Deep research: real Instagram + LinkedIn data with engagement scoring (requires APIFY_TOKEN)
+    apify_ig = fetch_instagram_apify()
+    apify_li = fetch_linkedin_apify()
+    if apify_ig or apify_li:
+        articles.extend(apify_ig)
+        articles.extend(apify_li)
+        logger.info(f"Apify deep research: {len(apify_ig)} Instagram + {len(apify_li)} LinkedIn posts. "
+                    f"Total articles: {len(articles)}")
 
     if articles:
         with get_db() as conn:
@@ -404,10 +498,25 @@ def fetch_and_cache_intel():
         from anthropic import Anthropic
         client = Anthropic(api_key=api_key)
 
-        article_text = '\n'.join([
-            f"- {a['title']} ({a['source']}): {a['summary']}"
-            for a in articles[:30]
-        ])
+        # Separate Apify deep-research posts from RSS for richer context
+        apify_items = [a for a in articles if '⚡OUTLIER' in a['source'] or a['category'] in ('linkedin_accounts', 'instagram_accounts')]
+        rss_items = [a for a in articles if a not in apify_items]
+        has_deep = bool(apify_items)
+
+        def _fmt(a):
+            return f"[{a['category'].upper()}] {a['title']} | Source: {a['source']} | {a['summary'][:200]}"
+
+        # Outliers first, then RSS, cap at 35 total
+        article_text = '\n'.join(
+            [_fmt(a) for a in apify_items[:20]] +
+            [_fmt(a) for a in rss_items[:15]]
+        )
+        data_quality_note = (
+            "DATA: Real post data with engagement scores from Apify (Instagram + LinkedIn scrapers). "
+            "⚡OUTLIER items are statistically above average for that account."
+            if has_deep else
+            "DATA: Google News RSS summaries only (surface-level). No real engagement numbers available."
+        )
 
         with get_db() as conn:
             recent_rows = conn.execute(
@@ -428,65 +537,97 @@ def fetch_and_cache_intel():
             max_tokens=1800,
             messages=[{
                 "role": "user",
-                "content": f"""Analyze these articles from the PAST 7 DAYS for Mir Tahmid Ali.
+                "content": f"""You are the intel engine for Mir Tahmid Ali's content system.
+All articles below are from the PAST 7 DAYS only. Ignore anything that feels older.
 
-Mir's domains:
-- LinkedIn: B2B creator marketing, community building, influencer ROI, creator economy mechanics
-- Instagram: Slow travel on Indian passport, digital nomad logistics, remote work, SEA travel
+━━━ MIR'S DOMAINS (STRICT — DO NOT MIX) ━━━
 
-Creators Mir monitors on LinkedIn (spot what's getting unusual engagement from these people/their space):
+LINKEDIN DOMAIN (only B2B/professional topics go here):
+- B2B creator and influencer marketing
+- Creator economy mechanics (deals, ROI, attribution)
+- Community building as a business strategy
+- Founder/operator insights
+- Creator sourcing and outreach (Passionfroot's world)
+LinkedIn audience: founders, marketers, operators, B2B decision-makers
+
+INSTAGRAM DOMAIN (only travel/lifestyle/nomad topics go here):
+- Slow travel on an Indian passport (visa hacks, affordable destinations)
+- Digital nomad logistics (cost of living, remote work setup, SEA hubs)
+- Cultural immersion — specific places, real moments
+- Indian traveler abroad — the struggle and the freedom
+- Remote work lifestyle — where to go, how to live cheaply
+Instagram audience: Indian professionals considering travel, nomads, remote workers
+
+NEWSLETTER DOMAIN (the bridge — mixes both worlds):
+- Personal story from travels that connects to a professional insight
+- Mir's full self: the builder AND the traveler
+- One concrete lesson from both worlds
+
+━━━ CREATORS MIR MONITORS ━━━
+
+LinkedIn accounts (what's getting traction in their space this week):
 {li_str}
 
-Creators Mir monitors on Instagram (spot outliers in their content space):
+Instagram accounts (what formats/topics are resonating this week):
 {ig_str}
 
-ARTICLES (with sources, past 7 days):
+━━━ DATA SOURCE ━━━
+{data_quality_note}
+
+━━━ CONTENT + ENGAGEMENT DATA (PAST 7 DAYS) ━━━
 {article_text}
 
-RECENTLY COVERED by Mir (avoid repeating): {recent_str}
+RECENTLY COVERED by Mir (do NOT repeat these): {recent_str}
 
-OUTLIER DETECTION: Flag topics where you see unusual spike or momentum vs. typical content — anything that appears to be getting 2x or more discussion than usual in this space right now.
+━━━ TASK ━━━
+1. Identify what is genuinely trending RIGHT NOW (this week) in each domain
+2. Flag OUTLIERS — topics getting 2x+ normal engagement vs. typical weeks
+3. Suggest angles that are NOT obvious — gaps nobody is writing about
+4. Keep LinkedIn and Instagram intel completely separate — no crossover
 
-For each intel item, include the exact source name and URL it came from.
-
-Return ONLY valid JSON — no markdown, no explanation:
+Return ONLY valid JSON:
 {{
   "linkedin_intel": [
     {{
-      "topic": "...",
-      "why_trending": "What is driving unusual engagement on LinkedIn for this right now",
-      "hook": "A first-line hook Mir could use — never starts with I, no em dashes",
+      "topic": "Specific B2B/creator/community topic that is hot THIS week on LinkedIn",
+      "why_trending": "What specifically is driving this conversation right now — cite the signal",
+      "hook": "First line of a LinkedIn post — pattern interrupt, never starts with I, no em dashes",
       "is_outlier": true,
-      "source_name": "...",
-      "source_url": "...",
-      "found_via": "Google News — [search term] — past 7 days"
+      "source_name": "exact source name from articles above",
+      "source_url": "exact URL",
+      "found_via": "Google News — creator economy — past 7 days"
     }}
   ],
   "instagram_intel": [
     {{
-      "topic": "...",
-      "why_trending": "What is resonating visually on Instagram in this space",
-      "hook": "Visual hook for a reel — what the first frame shows",
+      "topic": "Specific travel/nomad/Indian passport topic trending on Instagram this week",
+      "why_trending": "What visual format or angle is resonating right now — be specific",
+      "hook": "What the FIRST FRAME of the reel shows — visual and emotional",
       "is_outlier": false,
-      "source_name": "...",
-      "source_url": "...",
-      "found_via": "Google News — [search term] — past 7 days"
+      "source_name": "exact source name",
+      "source_url": "exact URL",
+      "found_via": "Google News — slow travel — past 7 days"
     }}
   ],
   "content_gaps": [
     {{
-      "angle": "...",
-      "why": "Why this is underserved — who is NOT writing this",
-      "source_name": "...",
-      "source_url": "..."
+      "angle": "Something in Mir's world that nobody is writing about this week",
+      "why": "Why this is underserved right now",
+      "platform": "linkedin or instagram",
+      "source_name": "source that hints at this gap",
+      "source_url": "URL"
     }}
   ],
   "suggested_angles": [
-    {{"idea": "Specific post idea in Mir's voice — concrete, no platitudes", "platform": "linkedin or instagram", "source_url": "..."}}
+    {{
+      "idea": "Concrete post idea in Mir's voice — specific, no platitudes, real numbers or situations",
+      "platform": "linkedin or instagram",
+      "source_url": "URL that inspired this"
+    }}
   ]
 }}
 
-2-3 items per section. Only include items supported by the articles above. Hyper-specific to Mir's niche. No generic marketing advice."""
+2-3 items per section. If you cannot find genuine past-7-day data for a section, return an empty array rather than making things up."""
             }]
         )
 
@@ -530,7 +671,7 @@ Return ONLY valid JSON — no markdown, no explanation:
                     json.dumps(analysis.get('linkedin_intel', analysis.get('debates', []))),
                     json.dumps(analysis.get('content_gaps', analysis.get('gaps', []))),
                     json.dumps(analysis.get('instagram_intel', analysis.get('trending', []))),
-                    json.dumps(analysis.get('suggested_angles', [])),
+                    json.dumps({'angles': analysis.get('suggested_angles', []), 'deep_data': has_deep}),
                     instagram_insights,
                     datetime.datetime.now().isoformat(),
                 )
@@ -637,20 +778,31 @@ def _generate_inner():
     # ── LinkedIn ──────────────────────────────────────────────────────────────
     if 'linkedin' in platforms:
         try:
-            prompt = f"""Write a LinkedIn post for Mir. He is talking to a friend, not broadcasting to followers.
+            prompt = f"""Write a LinkedIn post for Mir Tahmid Ali.
+
+LINKEDIN DOMAIN: B2B creator marketing, community building, influencer ROI, creator economy mechanics, founder ops.
+This is NOT the place for travel or nomad content. This is Mir the builder, the operator, the systems thinker.
 
 RAW THOUGHT:
 {thought}
 {context_block}
 
-RULES:
+TONE: Mir talking to ONE smart friend who works in startups or marketing. Not a thought leader speaking to a crowd. Not a brand. A person with experience sharing a real observation.
+
+STRUCTURE:
+1. Hook: Pattern interrupt. Surprising stat, counterintuitive truth, or relatable frustration. Never starts with "I".
+2. Human layer: 1-2 sentences on why this matters or what it felt like to learn this.
+3. Core insight: One concrete thing. Real numbers if available. Systems thinking applied to a real situation.
+4. Close: A genuine question OR a soft observation. Never a call-to-action. Never "DM me".
+
+HARD RULES:
 - 150-250 words
-- Short 1-2 sentence paragraphs, blank line between each (mobile-friendly)
-- NEVER start with "I"
-- NEVER use em dashes (the long dash). Use commas or periods instead.
-- Structure: Hook (stops scroll, never starts with I) then emotional layer then one core insight then a real question or soft CTA
-- End with 3-5 relevant hashtags on last line only
-- Sounds like Mir talking to one specific friend. Not a thought leader. Not a brand.
+- Short paragraphs (1-2 sentences max), blank line between each
+- NEVER start with "I" as the very first word
+- NEVER use em dashes. Use commas or short sentences.
+- No bullet point lists unless the thought is naturally list-shaped
+- No "excited to share", "thrilled", "let's talk about"
+- End with 3-5 hashtags on the last line only
 
 Return ONLY the post text. Nothing else."""
             r = client.messages.create(
@@ -666,26 +818,37 @@ Return ONLY the post text. Nothing else."""
     # ── Newsletter ────────────────────────────────────────────────────────────
     if 'newsletter' in platforms:
         try:
-            prompt = f"""Write a Beehiiv newsletter section for Mir. He is writing a personal note to a friend, not a newsletter blast.
+            prompt = f"""Write a Beehiiv newsletter section for Mir Tahmid Ali.
+
+NEWSLETTER DOMAIN: The bridge between Mir's two worlds — the builder (B2B/creator/startup) and the traveler (slow travel, Indian passport, nomad). This is the only platform where both sides of Mir exist in the same piece. The professional insight lands harder because of the personal story behind it, or vice versa.
 
 RAW THOUGHT:
 {thought}
 {context_block}
 
-RULES:
-- NEVER use em dashes. Use commas or periods instead.
-- NEVER start body with "In this issue", "Hi everyone", "Today we"
-- Body: 200 words. Personal note style. No section headers inside body.
-- First sentence: specific stat, surprising claim, or real situation
-- At least one real number or concrete example
-- Closing: one quotable sentence. Optionally: "Reply and tell me what you think."
+TONE: A personal note from a friend who happens to be both an operator and a traveler. Not a newsletter. A letter. Written to someone Mir respects, not to subscribers.
 
-OUTPUT FORMAT (use exactly these labels):
+WHAT MAKES IT WORK:
+- Opens with something specific: a situation, a number, a place, a feeling
+- Connects the personal and the professional naturally (not forced)
+- One concrete insight that the reader will remember tomorrow
+- Ends with something quotable OR an honest question they'll want to reply to
 
-Subject: [curiosity-gap or direct-benefit subject line]
-Headline: [bold article-style headline for Beehiiv top]
+HARD RULES:
+- Body: 180-220 words
+- NO section headers inside the body
+- NO "Hi everyone", "In this issue", "Today I want to talk about"
+- NEVER use em dashes. Use commas or short sentences.
+- NEVER start the body with "I"
+- At least one real number or real place name
+- Closing line: memorable. Could be a single sentence they screenshot.
+
+OUTPUT FORMAT (exact labels, nothing else):
+
+Subject: [curiosity-gap or direct-benefit — max 50 chars]
+Headline: [bold article-style headline for top of Beehiiv post]
 ---
-[Body here]
+[Body — 180-220 words, no headers]
 
 Return ONLY the formatted content. Nothing else."""
             r = client.messages.create(
@@ -701,32 +864,44 @@ Return ONLY the formatted content. Nothing else."""
     # ── Instagram ─────────────────────────────────────────────────────────────
     if 'instagram' in platforms:
         try:
-            prompt = f"""Write a 45-second Instagram reel voice-over script for @mirtheexplorer. Personal travel and remote work content.
+            prompt = f"""Write a 45-second Instagram reel voice-over script for Mir Tahmid Ali (@mirtheexplorer).
+
+INSTAGRAM DOMAIN: Slow travel, Indian passport travel, digital nomad logistics, remote work lifestyle, SEA destinations, cultural immersion. This is NOT the place for B2B or creator economy content. This is Mir the traveler, the explorer, the person figuring out how to live freely on an Indian passport.
 
 RAW THOUGHT:
 {thought}
 {context_block}
 
-RULES:
-- Voice: talking to ONE friend. Not an audience.
-- Mir speaks slowly with deliberate pauses. 75-90 words total for voice-over.
-- NEVER use em dashes. Use commas or short sentences instead.
-- Specific location. Specific moment. Real details. No generic travel wisdom.
+TONE: Telling ONE friend about something that happened or something you realized while traveling. Conversational. Specific. Grounded. Not inspirational. Not advice-giving. Just honest.
+
+WHAT MAKES IT WORK ON INSTAGRAM:
+- First 3 seconds: visual + emotional hook that stops the scroll
+- Specific location, specific moment — not "I was somewhere beautiful"
+- The feeling of being an Indian traveler abroad — the unique friction and freedom
+- One real insight. Not a lesson. A realization.
+- Pacing: short sentences. Deliberate pauses. Mir speaks slowly.
+
+HARD RULES:
+- 75-90 words total for voice-over text (people speak ~130 wpm, 45s = ~100 words max)
+- NEVER use em dashes. Use commas, line breaks, or short sentences.
+- Specific real location (city, cafe, airport, hostel). Not "a beautiful place."
+- No generic travel wisdom ("life is short", "step outside your comfort zone")
+- No "Don't forget to follow" or "subscribe"
 
 OUTPUT FORMAT (exact labels):
 
-HOOK (0-5s): [1-2 short sentences. Grabs in first breath. Visual + emotional.]
-STORY (5-25s): [3-4 sentences. Specific location, time, situation. First-person, conversational.]
-INSIGHT (25-40s): [1-2 sentences. The one takeaway. Works as a standalone quote.]
-LOOP/CTA (40-45s): [1 sentence. Loops to hook image or next step. Never "subscribe".]
+HOOK (0-5s): [1-2 short punchy lines. Visual scene + instant emotional grab.]
+STORY (5-25s): [3-4 sentences. Specific location, real moment, what actually happened.]
+INSIGHT (25-40s): [1-2 sentences. The realization. Should work as a standalone quote.]
+LOOP/CTA (40-45s): [1 sentence. Loops back to opening image OR ends with a real question.]
 
-B-ROLL IDEAS:
-1. [specific shot]
+B-ROLL:
+1. [specific shot — what the camera shows]
 2. [specific shot]
 3. [specific shot]
 4. [specific shot]
 
-THUMBNAIL: [one visual concept]
+THUMBNAIL FRAME: [the single most scroll-stopping visual from this story]
 
 Return ONLY the formatted script. Nothing else."""
             r = client.messages.create(
@@ -1018,17 +1193,34 @@ def get_intel():
         ).fetchall()
 
     if analysis:
+        angles_raw = json.loads(analysis['suggested_angles'] or '[]')
+        # Handle both old format (plain list) and new format (dict with angles + deep_data)
+        if isinstance(angles_raw, dict):
+            angles = angles_raw.get('angles', [])
+            deep_data = angles_raw.get('deep_data', False)
+        else:
+            angles = angles_raw
+            deep_data = False
+        debates_raw = json.loads(analysis['debates'] or '[]')
+        gaps_raw = json.loads(analysis['gaps'] or '[]')
+        trending_raw = json.loads(analysis['trending'] or '[]')
         return jsonify({
-            'debates': json.loads(analysis['debates'] or '[]'),
-            'gaps': json.loads(analysis['gaps'] or '[]'),
-            'trending': json.loads(analysis['trending'] or '[]'),
-            'suggested_angles': json.loads(analysis['suggested_angles'] or '[]'),
+            'linkedin_intel': debates_raw,   # stored in 'debates' column
+            'instagram_intel': trending_raw, # stored in 'trending' column
+            'content_gaps': gaps_raw,        # stored in 'gaps' column
+            # Legacy keys for any old UI references
+            'debates': debates_raw,
+            'gaps': gaps_raw,
+            'trending': trending_raw,
+            'suggested_angles': angles,
+            'deep_data': deep_data,
             'generated_at': analysis['generated_at'],
             'articles': [dict(a) for a in articles],
         })
     return jsonify({
+        'linkedin_intel': [], 'instagram_intel': [], 'content_gaps': [],
         'debates': [], 'gaps': [], 'trending': [],
-        'suggested_angles': [], 'generated_at': None, 'articles': [],
+        'suggested_angles': [], 'deep_data': False, 'generated_at': None, 'articles': [],
     })
 
 

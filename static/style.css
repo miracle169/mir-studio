@@ -716,6 +716,22 @@ input, textarea, select { user-select: text; }
   color: var(--txt3);
 }
 
+.intel-data-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  cursor: help;
+}
+.intel-data-badge--deep {
+  background: rgba(52,199,89,.15);
+  color: #34c759;
+}
+.intel-data-badge--surface {
+  background: rgba(255,159,10,.12);
+  color: #ff9f0a;
+}
+
 .intel-section {
   background: var(--surface);
   border-radius: var(--radius-md);
