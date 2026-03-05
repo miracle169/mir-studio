@@ -584,9 +584,9 @@ def fetch_and_cache_intel():
         client = Anthropic(api_key=api_key)
 
         # Separate social posts (Apify/Reddit) from RSS news articles
+        # has_deep already set above — True only when Apify returned real engagement data
         apify_items = [a for a in articles if a['category'] in ('linkedin_posts', 'instagram_posts')]
         rss_items = [a for a in articles if a['category'] not in ('linkedin_posts', 'instagram_posts')]
-        has_deep = bool(apify_items)
 
         def _fmt(a):
             return f"[{a['category'].upper()}] {a['title']} | Source: {a['source']} | {a['summary'][:200]}"
