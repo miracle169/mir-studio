@@ -337,7 +337,9 @@ _INSTAGRAM_SUBREDDITS = ["digitalnomad", "remotework", "solotravel", "travel", "
 
 def fetch_linkedin_apify():
     """LinkedIn keyword search via Apify — real posts ranked by engagement.
-    Searches each of Mir's LinkedIn topic keywords, scores posts, flags outliers."""
+    Searches each of Mir's LinkedIn topic keywords, scores posts, flags outliers.
+    Uses harvestapi/linkedin-post-search (4.9★, no cookies required).
+    Output fields: content, linkedinUrl, author.name, engagement.likes/comments/shares."""
     token = os.environ.get('APIFY_TOKEN')
     if not token:
         return [], False  # (articles, apify_used)
@@ -347,13 +349,15 @@ def fetch_linkedin_apify():
         all_items = []
         for keyword in _LINKEDIN_KEYWORDS:
             try:
-                # apimaestro/linkedin-posts-search-scraper-no-cookies — no auth required, 4.5★
-                run = apify.actor("apimaestro/linkedin-posts-search-scraper-no-cookies").call(run_input={
-                    "keyword": keyword,
-                    "date_filter": "past-week",
-                    "sort_type": "date_posted",
-                    "total_posts": 8,
-                }, timeout_secs=90)
+                # harvestapi/linkedin-post-search — no cookies, 4.9★, verified working
+                run = apify.actor("harvestapi/linkedin-post-search").call(run_input={
+                    "searchQueries": [keyword],
+                    "maxPosts": 8,
+                    "postedLimit": "week",
+                    "sortBy": "date",
+                    "scrapeComments": False,
+                    "scrapeReactions": False,
+                }, timeout_secs=120)
                 items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
                 for item in items:
                     item['_keyword'] = keyword  # tag so we know which topic surfaced it
@@ -365,32 +369,33 @@ def fetch_linkedin_apify():
             return [], True  # Apify was used but returned nothing
 
         def li_score(i):
-            return (i.get('totalReactionCount') or i.get('reactionCount') or i.get('likeCount') or 0) + \
-                   3 * (i.get('commentsCount') or i.get('commentCount') or 0) + \
-                   2 * (i.get('repostsCount') or i.get('reshareCount') or i.get('shareCount') or 0)
+            eng = i.get('engagement') or {}
+            return (eng.get('likes') or i.get('totalReactionCount') or i.get('likeCount') or 0) + \
+                   3 * (eng.get('comments') or i.get('commentsCount') or i.get('commentCount') or 0) + \
+                   2 * (eng.get('shares') or i.get('repostsCount') or i.get('shareCount') or 0)
 
         scored, threshold = _outlier_score(all_items, li_score)
         articles = []
         for score, item in scored:
-            reactions = item.get('totalReactionCount') or item.get('reactionCount') or item.get('likeCount') or 0
-            comments = item.get('commentsCount') or item.get('commentCount') or 0
-            reposts = item.get('repostsCount') or item.get('reshareCount') or item.get('shareCount') or 0
-            # Handle nested author object or flat field
+            eng = item.get('engagement') or {}
+            reactions = eng.get('likes') or item.get('totalReactionCount') or item.get('likeCount') or 0
+            comments = eng.get('comments') or item.get('commentsCount') or item.get('commentCount') or 0
+            reposts = eng.get('shares') or item.get('repostsCount') or item.get('shareCount') or 0
+            # harvestapi returns nested author object: {name, linkedinUrl, info, ...}
             author_obj = item.get('author') or {}
-            author = (item.get('authorName') or
-                      author_obj.get('name') or author_obj.get('fullName') or
+            author = (author_obj.get('name') or item.get('authorName') or
                       item.get('actorName') or 'LinkedIn user')
-            text = (item.get('text') or item.get('commentary') or item.get('content') or '')[:300]
-            keyword = item.get('_keyword', 'linkedin')
+            text = (item.get('content') or item.get('text') or item.get('commentary') or '')[:300]
+            kw = item.get('_keyword', 'linkedin')
             is_outlier = score > threshold
             articles.append({
                 'id': str(uuid.uuid4()),
-                'source': f"LinkedIn — {keyword}{' ⚡OUTLIER' if is_outlier else ''}",
+                'source': f"LinkedIn — {kw}{' ⚡OUTLIER' if is_outlier else ''}",
                 'title': text[:80] or f"Post by {author}",
-                'url': item.get('url') or item.get('postUrl') or item.get('link', ''),
+                'url': item.get('linkedinUrl') or item.get('url') or item.get('postUrl') or '',
                 'summary': (
                     f"{'⚡ OUTLIER — ' if is_outlier else ''}"
-                    f"Keyword: '{keyword}' | Eng score: {int(score)} | "
+                    f"Keyword: '{kw}' | Eng score: {int(score)} | "
                     f"{reactions} reactions, {comments} comments, {reposts} reposts | "
                     f"Author: {author} | Post: {text[:200]}"
                 ),
@@ -405,7 +410,7 @@ def fetch_linkedin_apify():
         return [], False
     except Exception as e:
         logger.error(f"Apify LinkedIn error: {e}")
-        return [], False
+        raise  # Re-raise so fetch_and_cache_intel logs the actual error in intel_run_log
 
 
 def fetch_instagram(hashtags=None):
@@ -487,6 +492,7 @@ def _fetch_instagram_instaloader(hashtags):
                 })
         except Exception as e:
             logger.warning(f"Instaloader #{tag} error: {e}")
+            break  # Railway datacenter IPs are blocked; if first hashtag fails all will — skip to Apify
 
     logger.info(f"Instaloader Instagram: {len(articles)} posts from {len(hashtags)} hashtags")
     return articles
@@ -543,7 +549,7 @@ def _fetch_instagram_apify_raw(hashtags):
         return [], False
     except Exception as e:
         logger.error(f"Apify Instagram error: {e}")
-        return [], False
+        raise  # Re-raise so fetch_and_cache_intel logs the actual error in intel_run_log
 
 
 def fetch_instagram_apify():
