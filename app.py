@@ -301,28 +301,119 @@ def _outlier_score(items, score_fn):
     return scored, mean_s + (2.0 * stdev_s)
 
 
-def fetch_instagram_apify():
-    """Deep Instagram research via Apify — real reels with engagement data + outlier detection.
-    Fetches last 30 days from tracked accounts, scores by likes+3*comments+0.1*views,
-    flags outliers (mean + 2*stdev), returns enriched article-like dicts."""
+# ── Topic keyword lists (hard-separated by domain) ────────────────────────────
+# LinkedIn: B2B / creator-economy / community topics
+_LINKEDIN_KEYWORDS = [
+    "creator economy",
+    "B2B influencer marketing",
+    "community management",
+    "community building",
+    "sales and marketing",
+    "content marketing strategy",
+]
+
+# Instagram: travel / nomad / remote-work topics (hashtags for Apify, subreddits for Reddit)
+_INSTAGRAM_HASHTAGS = [
+    "digitalnomad",
+    "remotework",
+    "slowtravel",
+    "travelcontentcreator",
+    "indiantraveller",
+    "nomadlife",
+]
+
+# Reddit fallback subreddits — strictly separated
+_LINKEDIN_SUBREDDITS = ["marketing", "b2bmarketing", "sales", "entrepreneur", "socialmediamarketing", "content_marketing"]
+_INSTAGRAM_SUBREDDITS = ["digitalnomad", "remotework", "solotravel", "travel", "IndiaTravel", "backpacking"]
+
+
+def fetch_linkedin_apify():
+    """LinkedIn keyword search via Apify — real posts ranked by engagement.
+    Searches each of Mir's LinkedIn topic keywords, scores posts, flags outliers."""
     token = os.environ.get('APIFY_TOKEN')
     if not token:
-        return []
-    handles = get_tracked_handles('instagram') or [
-        "tanay.p", "nomadnumbers", "thewanderingquinn", "passportbros_india", "workfromwherever",
-    ]
+        return [], False  # (articles, apify_used)
     try:
         from apify_client import ApifyClient
         apify = ApifyClient(token)
+        all_items = []
+        for keyword in _LINKEDIN_KEYWORDS:
+            try:
+                run = apify.actor("curious_coder/linkedin-post-search-scraper").call(run_input={
+                    "queries": [keyword],
+                    "maxResults": 8,
+                    "datePosted": "past-week",
+                }, timeout_secs=90)
+                items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
+                for item in items:
+                    item['_keyword'] = keyword  # tag so we know which topic surfaced it
+                all_items.extend(items)
+            except Exception as e:
+                logger.warning(f"Apify LinkedIn keyword '{keyword}' error: {e}")
+                continue
+        if not all_items:
+            return [], True  # Apify was used but returned nothing
+
+        def li_score(i):
+            return (i.get('totalReactionCount') or i.get('likeCount') or 0) + \
+                   3 * (i.get('commentsCount') or i.get('commentCount') or 0) + \
+                   2 * (i.get('repostsCount') or i.get('shareCount') or 0)
+
+        scored, threshold = _outlier_score(all_items, li_score)
+        articles = []
+        for score, item in scored:
+            reactions = item.get('totalReactionCount') or item.get('likeCount') or 0
+            comments = item.get('commentsCount') or item.get('commentCount') or 0
+            reposts = item.get('repostsCount') or item.get('shareCount') or 0
+            author = item.get('authorName') or item.get('author', {}).get('name', 'LinkedIn user')
+            text = (item.get('text') or item.get('content') or '')[:300]
+            keyword = item.get('_keyword', 'linkedin')
+            is_outlier = score > threshold
+            articles.append({
+                'id': str(uuid.uuid4()),
+                'source': f"LinkedIn — {keyword}{' ⚡OUTLIER' if is_outlier else ''}",
+                'title': text[:80] or f"Post by {author}",
+                'url': item.get('url') or item.get('postUrl', ''),
+                'summary': (
+                    f"{'⚡ OUTLIER — ' if is_outlier else ''}"
+                    f"Keyword: '{keyword}' | Eng score: {int(score)} | "
+                    f"{reactions} reactions, {comments} comments, {reposts} reposts | "
+                    f"Author: {author} | Post: {text[:200]}"
+                ),
+                'category': 'linkedin_posts',
+                'cached_at': datetime.datetime.now().isoformat(),
+            })
+        outlier_count = sum(1 for s, _ in scored if s > threshold)
+        logger.info(f"Apify LinkedIn keyword search: {len(articles)} posts across {len(_LINKEDIN_KEYWORDS)} keywords, {outlier_count} outliers")
+        return articles, True
+    except ImportError:
+        logger.warning("apify-client not installed")
+        return [], False
+    except Exception as e:
+        logger.error(f"Apify LinkedIn error: {e}")
+        return [], False
+
+
+def fetch_instagram_apify():
+    """Instagram hashtag search via Apify — real posts ranked by engagement.
+    Scrapes Mir's travel/nomad hashtags, scores posts, flags outliers."""
+    token = os.environ.get('APIFY_TOKEN')
+    if not token:
+        return [], False  # (articles, apify_used)
+    try:
+        from apify_client import ApifyClient
+        apify = ApifyClient(token)
+        # Use hashtag URLs — more reliable than profile scraping for trend discovery
+        hashtag_urls = [f"https://www.instagram.com/explore/tags/{tag}/" for tag in _INSTAGRAM_HASHTAGS]
         run = apify.actor("apify/instagram-scraper").call(run_input={
-            "directUrls": [f"https://www.instagram.com/{h}/" for h in handles],
+            "directUrls": hashtag_urls,
             "resultsType": "posts",
-            "resultsLimit": 12,  # More posts per account for better outlier stats
-            "onlyPostsNewerThan": "30 days",
+            "resultsLimit": 10,
+            "onlyPostsNewerThan": "7 days",
         }, timeout_secs=120)
         items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
         if not items:
-            return []
+            return [], True  # Apify used but nothing returned
 
         def ig_score(i):
             return (i.get('likesCount') or 0) + \
@@ -335,97 +426,73 @@ def fetch_instagram_apify():
             likes = item.get('likesCount') or 0
             comments = item.get('commentsCount') or 0
             views = item.get('videoViewCount') or 0
-            saves = item.get('savesCount') or 0
             owner = item.get('ownerUsername', 'unknown')
-            followers = item.get('ownerFollowersCount') or 1
-            eng_rate = round((score / followers) * 100, 2) if followers else 0
-            is_outlier = score > threshold
+            hashtags_used = ' '.join((item.get('hashtags') or [])[:5])
             caption = (item.get('caption') or '')[:300]
+            is_outlier = score > threshold
             articles.append({
                 'id': str(uuid.uuid4()),
-                'source': f"Instagram @{owner}{' ⚡OUTLIER' if is_outlier else ''}",
+                'source': f"Instagram hashtag{' ⚡OUTLIER' if is_outlier else ''}",
                 'title': caption[:80] or f"Post by @{owner}",
                 'url': item.get('url', ''),
                 'summary': (
                     f"{'⚡ OUTLIER — ' if is_outlier else ''}"
-                    f"Eng score: {int(score)} | {likes} likes, {comments} comments, "
-                    f"{views} views, {saves} saves | Eng rate: {eng_rate}% | "
-                    f"Caption: {caption[:180]}"
+                    f"Eng score: {int(score)} | {likes} likes, {comments} comments, {views} views | "
+                    f"@{owner} | Tags: {hashtags_used} | Caption: {caption[:180]}"
                 ),
-                'category': 'instagram_accounts',
+                'category': 'instagram_posts',
                 'cached_at': datetime.datetime.now().isoformat(),
             })
         outlier_count = sum(1 for s, _ in scored if s > threshold)
-        logger.info(f"Apify Instagram: {len(articles)} posts, {outlier_count} outliers (threshold={int(threshold)})")
-        return articles
+        logger.info(f"Apify Instagram hashtags: {len(articles)} posts, {outlier_count} outliers")
+        return articles, True
     except ImportError:
-        logger.warning("apify-client not installed; skipping Instagram deep research")
-        return []
+        logger.warning("apify-client not installed")
+        return [], False
     except Exception as e:
         logger.error(f"Apify Instagram error: {e}")
-        return []
+        return [], False
 
 
-def fetch_linkedin_apify():
-    """Deep LinkedIn research via Apify — real posts with reactions/comments + outlier detection.
-    Fetches recent posts from tracked LinkedIn handles, scores by weighted engagement,
-    flags outliers (mean + 2*stdev), returns enriched article-like dicts."""
-    token = os.environ.get('APIFY_TOKEN')
-    if not token:
-        return []
-    handles = get_tracked_handles('linkedin') or [
-        "justinwelsh", "mattgray", "laraacosta", "jasmin-alic",
-    ]
-    try:
-        from apify_client import ApifyClient
-        apify = ApifyClient(token)
-        # Apify LinkedIn Posts Scraper
-        run = apify.actor("curious_coder/linkedin-post-search-scraper").call(run_input={
-            "profileUrls": [f"https://www.linkedin.com/in/{h}/" for h in handles],
-            "maxPosts": 20,
-        }, timeout_secs=120)
-        items = list(apify.dataset(run["defaultDatasetId"]).iterate_items())
-        if not items:
-            return []
-
-        def li_score(i):
-            # Weighted: reactions(1x) + comments(3x) + reposts(2x) + shares(2x)
-            return (i.get('totalReactionCount') or i.get('likeCount') or 0) + \
-                   3 * (i.get('commentsCount') or i.get('commentCount') or 0) + \
-                   2 * (i.get('repostsCount') or i.get('shareCount') or 0)
-
-        scored, threshold = _outlier_score(items, li_score)
-        articles = []
-        for score, item in scored:
-            reactions = item.get('totalReactionCount') or item.get('likeCount') or 0
-            comments = item.get('commentsCount') or item.get('commentCount') or 0
-            reposts = item.get('repostsCount') or item.get('shareCount') or 0
-            author = item.get('authorName') or item.get('author', {}).get('name', 'unknown')
-            text = (item.get('text') or item.get('content') or '')[:300]
-            is_outlier = score > threshold
-            articles.append({
-                'id': str(uuid.uuid4()),
-                'source': f"LinkedIn {author}{' ⚡OUTLIER' if is_outlier else ''}",
-                'title': text[:80] or f"Post by {author}",
-                'url': item.get('url') or item.get('postUrl', ''),
-                'summary': (
-                    f"{'⚡ OUTLIER — ' if is_outlier else ''}"
-                    f"Eng score: {int(score)} | {reactions} reactions, "
-                    f"{comments} comments, {reposts} reposts | "
-                    f"Post: {text[:200]}"
-                ),
-                'category': 'linkedin_accounts',
-                'cached_at': datetime.datetime.now().isoformat(),
-            })
-        outlier_count = sum(1 for s, _ in scored if s > threshold)
-        logger.info(f"Apify LinkedIn: {len(articles)} posts, {outlier_count} outliers (threshold={int(threshold)})")
-        return articles
-    except ImportError:
-        logger.warning("apify-client not installed; skipping LinkedIn deep research")
-        return []
-    except Exception as e:
-        logger.error(f"Apify LinkedIn error: {e}")
-        return []
+def fetch_reddit_intel(subreddits, platform_label):
+    """Free Reddit API fallback — no key needed. Fetches top posts of the week
+    from the given subreddits and formats them as intel articles."""
+    import requests as _req
+    headers = {"User-Agent": "MirStudio/2.0 (personal content tool)"}
+    articles = []
+    for sub in subreddits:
+        try:
+            url = f"https://www.reddit.com/r/{sub}/top.json?t=week&limit=8"
+            resp = _req.get(url, headers=headers, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            for post in data.get('data', {}).get('children', []):
+                p = post.get('data', {})
+                score = p.get('score', 0)
+                num_comments = p.get('num_comments', 0)
+                title = p.get('title', '').strip()
+                selftext = (p.get('selftext') or '')[:250].strip()
+                permalink = p.get('permalink', '')
+                if not title:
+                    continue
+                articles.append({
+                    'id': str(uuid.uuid4()),
+                    'source': f"Reddit r/{sub}",
+                    'title': title,
+                    'url': f"https://reddit.com{permalink}",
+                    'summary': (
+                        f"r/{sub} | {score} upvotes, {num_comments} comments this week | "
+                        f"{selftext or 'Link post'}"
+                    ),
+                    'category': platform_label,
+                    'cached_at': datetime.datetime.now().isoformat(),
+                })
+        except Exception as e:
+            logger.warning(f"Reddit r/{sub} error: {e}")
+            continue
+    logger.info(f"Reddit {platform_label}: {len(articles)} posts from {len(subreddits)} subreddits")
+    return articles
 
 
 def fetch_and_cache_intel():
@@ -470,14 +537,32 @@ def fetch_and_cache_intel():
         except Exception as e:
             logger.error(f"RSS error {name}: {e}")
 
-    # Deep research: real Instagram + LinkedIn data with engagement scoring (requires APIFY_TOKEN)
-    apify_ig = fetch_instagram_apify()
-    apify_li = fetch_linkedin_apify()
-    if apify_ig or apify_li:
-        articles.extend(apify_ig)
-        articles.extend(apify_li)
-        logger.info(f"Apify deep research: {len(apify_ig)} Instagram + {len(apify_li)} LinkedIn posts. "
-                    f"Total articles: {len(articles)}")
+    # ── Social data: Apify (keyword/hashtag) with Reddit fallback ─────────────────
+    token = os.environ.get('APIFY_TOKEN')
+
+    # LinkedIn: keyword-based Apify search → Reddit fallback
+    li_posts, li_apify_used = fetch_linkedin_apify()
+    if li_posts:
+        articles.extend(li_posts)
+        logger.info(f"LinkedIn via Apify keyword search: {len(li_posts)} posts")
+    else:
+        li_reddit = fetch_reddit_intel(_LINKEDIN_SUBREDDITS, 'linkedin_posts')
+        articles.extend(li_reddit)
+        reason = "Apify limit/error" if (token and li_apify_used) else "no Apify token"
+        logger.info(f"LinkedIn via Reddit fallback ({reason}): {len(li_reddit)} posts")
+
+    # Instagram: hashtag-based Apify search → Reddit fallback
+    ig_posts, ig_apify_used = fetch_instagram_apify()
+    if ig_posts:
+        articles.extend(ig_posts)
+        logger.info(f"Instagram via Apify hashtag search: {len(ig_posts)} posts")
+    else:
+        ig_reddit = fetch_reddit_intel(_INSTAGRAM_SUBREDDITS, 'instagram_posts')
+        articles.extend(ig_reddit)
+        reason = "Apify limit/error" if (token and ig_apify_used) else "no Apify token"
+        logger.info(f"Instagram via Reddit fallback ({reason}): {len(ig_reddit)} posts")
+
+    has_deep = bool(li_posts or ig_posts)  # True = real Apify engagement data available
 
     if articles:
         with get_db() as conn:
@@ -498,9 +583,9 @@ def fetch_and_cache_intel():
         from anthropic import Anthropic
         client = Anthropic(api_key=api_key)
 
-        # Separate Apify deep-research posts from RSS for richer context
-        apify_items = [a for a in articles if '⚡OUTLIER' in a['source'] or a['category'] in ('linkedin_accounts', 'instagram_accounts')]
-        rss_items = [a for a in articles if a not in apify_items]
+        # Separate social posts (Apify/Reddit) from RSS news articles
+        apify_items = [a for a in articles if a['category'] in ('linkedin_posts', 'instagram_posts')]
+        rss_items = [a for a in articles if a['category'] not in ('linkedin_posts', 'instagram_posts')]
         has_deep = bool(apify_items)
 
         def _fmt(a):
@@ -512,10 +597,10 @@ def fetch_and_cache_intel():
             [_fmt(a) for a in rss_items[:15]]
         )
         data_quality_note = (
-            "DATA: Real post data with engagement scores from Apify (Instagram + LinkedIn scrapers). "
-            "⚡OUTLIER items are statistically above average for that account."
+            "DATA: Real post data with engagement scores from Apify — LinkedIn keyword search + Instagram hashtag search. "
+            "⚡OUTLIER = statistically above-average engagement. Topics are keyword/hashtag-driven, NOT profile-based."
             if has_deep else
-            "DATA: Google News RSS summaries only (surface-level). No real engagement numbers available."
+            "DATA: Reddit community posts (top of week) + Google News RSS. Reddit shows what people are actively discussing."
         )
 
         with get_db() as conn:
